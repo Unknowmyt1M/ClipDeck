@@ -9,7 +9,6 @@ import {
   restoreItem,
   setItemFavorite,
   setItemPinned,
-  updateSettings,
 } from "./lib/tauri";
 import { useClipboard } from "./features/clipboard";
 import { useSettings } from "./features/settings/useSettings";
@@ -139,17 +138,11 @@ function MainWindow() {
     [showToast, refresh],
   );
 
-  const handleSettingsChange = useCallback(
-    async (next: Settings) => {
-      setSettings(next);
-      try {
-        await updateSettings(next);
-      } catch {
-        // update_settings surfaces errors through the settings page toasts
-      }
-    },
-    [setSettings],
-  );
+  const handleSettingsChange = useCallback((next: Settings) => {
+    // SettingsPage persists via update_settings; here we only mirror state
+    // so the header/theme react immediately (no double IPC write).
+    setSettings(next);
+  }, [setSettings]);
 
   // Global keyboard shortcuts (ignored while typing in the search box).
   useEffect(() => {
