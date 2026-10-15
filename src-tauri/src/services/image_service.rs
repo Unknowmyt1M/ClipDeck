@@ -81,6 +81,45 @@ impl ImageService {
         let _ = std::fs::remove_file(self.path_for(uuid, true));
     }
 
+    /// Delete files for many items (best effort).
+    pub fn delete_many(&self, uuids: &[String]) {
+        for uuid in uuids {
+            self.delete(uuid);
+        }
+    }
+
+    /// Remove image files whose item rows no longer exist (best effort).
+    /// Returns how many files were deleted.
+    pub fn cleanup_orphans(&self, keep: &[String]) -> usize {
+        let keep: std::collections::HashSet<&str> = keep.iter().map(String::as_str).collect();
+        let mut removed = 0;
+        let Ok(entries) = std::fs::read_dir(&self.images_dir) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let base = name
+                .strip_suffix("_thumb.png")
+                .or_else(|| name.strip_suffix(".png"));
+            if let Some(uuid) = base
+                && !keep.contains(uuid)
+                && std::fs::remove_file(entry.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// Remove every image file (privacy wipe).
+    pub fn delete_all(&self) {
+        if let Ok(entries) = std::fs::read_dir(&self.images_dir) {
+            for entry in entries.flatten() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
     fn path_for(&self, uuid: &str, thumb: bool) -> PathBuf {
         if thumb {
             self.images_dir.join(format!("{uuid}_thumb.png"))

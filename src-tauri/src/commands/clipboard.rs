@@ -4,16 +4,20 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::models::clipboard::ClipboardItem;
+use crate::services::ai_service::AiService;
 use crate::services::clipboard_service;
 use crate::services::clipboard_service::SelfWriteGuard;
 use crate::services::database_service::DatabaseService;
 use crate::services::image_service::ImageService;
+use crate::services::settings_service::SettingsService;
 
 /// Shared state managed by Tauri.
 pub struct AppState {
     pub db: Arc<DatabaseService>,
     pub images: Arc<ImageService>,
     pub write_guard: SelfWriteGuard,
+    pub settings: Arc<SettingsService>,
+    pub ai: Arc<AiService>,
 }
 
 #[derive(Serialize)]
@@ -27,7 +31,10 @@ pub struct ClearResult {
     pub deleted: usize,
 }
 
-/// List clipboard history with optional type filter and search query.
+/// List clipboard history with optional filter and search query.
+///
+/// `type_filter` accepts content types plus `pinned`, `favorites`, `today`
+/// and `week`.
 #[tauri::command]
 pub fn get_items(
     state: State<'_, AppState>,

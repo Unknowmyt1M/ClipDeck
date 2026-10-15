@@ -10,6 +10,8 @@ interface ClipboardListProps {
   onTogglePin: (item: ClipboardItem) => void;
   onToggleFavorite: (item: ClipboardItem) => void;
   onDelete: (item: ClipboardItem) => void;
+  /** Optional AI actions handler (omitted in the quick-pick window). */
+  onAi?: (item: ClipboardItem) => void;
 }
 
 /** Scrollable history list with keyboard navigation support. */
@@ -21,6 +23,7 @@ export function ClipboardList({
   onTogglePin,
   onToggleFavorite,
   onDelete,
+  onAi,
 }: ClipboardListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -44,6 +47,7 @@ export function ClipboardList({
           onTogglePin={() => onTogglePin(item)}
           onToggleFavorite={() => onToggleFavorite(item)}
           onDelete={() => onDelete(item)}
+          onAi={onAi ? () => onAi(item) : undefined}
         />
       ))}
     </div>

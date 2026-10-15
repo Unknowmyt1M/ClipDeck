@@ -1,3 +1,10 @@
+pub mod ai_service;
 pub mod clipboard_service;
 pub mod database_service;
+pub mod hotkey_service;
 pub mod image_service;
+pub mod logger;
+pub mod search_service;
+pub mod settings_service;
+pub mod source_service;
+pub mod windows_service;

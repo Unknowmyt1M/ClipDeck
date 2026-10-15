@@ -10,6 +10,8 @@ interface ClipboardCardProps {
   onTogglePin: () => void;
   onToggleFavorite: () => void;
   onDelete: () => void;
+  /** Opens the AI actions modal for this clip (optional). */
+  onAi?: () => void;
 }
 
 const TYPE_BADGE: Record<ClipboardItem["type"], string> = {
@@ -27,6 +29,7 @@ export function ClipboardCard({
   onTogglePin,
   onToggleFavorite,
   onDelete,
+  onAi,
 }: ClipboardCardProps) {
   const timestamp = item.last_used_at ?? item.created_at;
 
@@ -71,6 +74,38 @@ export function ClipboardCard({
               {item.type === "image" ? item.preview : item.preview || truncate(item.content, 200)}
             </p>
           )}
+
+          {/* AI summary (written by the background analysis queue). */}
+          {item.ai_summary && (
+            <p className="mt-1 text-xs break-words text-muted-foreground italic">
+              ✦ {item.ai_summary}
+            </p>
+          )}
+
+          {/* Tags + AI category + sensitive flag. */}
+          {(item.tags.length > 0 || item.ai_category || item.is_sensitive) && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              {item.is_sensitive && (
+                <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+                  sensitive
+                </span>
+              )}
+              {item.ai_category && (
+                <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {item.ai_category}
+                </span>
+              )}
+              {item.tags.slice(0, 4).map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          )}
+
           <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
             <span>{formatRelativeTime(timestamp)}</span>
             {item.use_count > 1 && <span>· used {item.use_count}×</span>}
@@ -107,6 +142,15 @@ export function ClipboardCard({
               d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z"
             />
           </ActionButton>
+          {onAi && (
+            <ActionButton label="AI actions" onClick={onAi}>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z"
+              />
+            </ActionButton>
+          )}
           <ActionButton label="Copy" onClick={onRestore}>
             <path
               strokeLinecap="round"

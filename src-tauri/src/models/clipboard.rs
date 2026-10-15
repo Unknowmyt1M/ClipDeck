@@ -49,6 +49,18 @@ pub struct ClipboardItem {
     pub is_favorite: bool,
     pub is_archived: bool,
     pub is_sensitive: bool,
+    /// AI summary (attached on list reads; `None` until analyzed).
+    #[serde(default)]
+    pub ai_summary: Option<String>,
+    /// AI category label (attached on list reads).
+    #[serde(default)]
+    pub ai_category: Option<String>,
+    /// AI keywords (attached on list reads).
+    #[serde(default)]
+    pub ai_keywords: Vec<String>,
+    /// Linked tag names (manual + AI).
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Classify plain text content into a clipboard item type.

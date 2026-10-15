@@ -1,10 +1,11 @@
 pub mod queries;
+pub mod settings_queries;
 
 use rusqlite::Connection;
 use std::path::Path;
 
 /// Current schema version. Bump when adding a migration.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Open (or create) the SQLite database at `path` and apply migrations.
 pub fn init_database(path: &Path) -> Result<Connection, String> {
@@ -43,8 +44,12 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
         apply_v1(conn)?;
     }
 
+    if version < 2 {
+        apply_v2(conn)?;
+    }
+
     // Future migrations go here:
-    // if version < 2 { apply_v2(conn)?; }
+    // if version < 3 { apply_v3(conn)?; }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(|e| format!("failed to update schema version: {e}"))?;
@@ -109,6 +114,65 @@ fn apply_v1(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migration v1 failed: {e}"))
+}
+
+/// Migration v2: AI metadata (stored separately from clipboard data) and
+/// FTS5 search index. FTS5 may be unavailable in a stock SQLite build —
+/// fall back gracefully and remember to skip FTS queries.
+fn apply_v2(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS ai_metadata (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            clipboard_id  INTEGER NOT NULL UNIQUE REFERENCES clipboard_items(id) ON DELETE CASCADE,
+            provider      TEXT NOT NULL,
+            model         TEXT NOT NULL,
+            summary       TEXT,
+            category      TEXT,
+            keywords      TEXT,
+            confidence    REAL,
+            embedding     BLOB,
+            embedding_model TEXT,
+            processed_at  INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migration v2 (ai_metadata) failed: {e}"))?;
+
+    // FTS5 virtual table over clipboard item text. Content column mirrors
+    // clipboard_items so we can rebuild with 'rebuild' when needed.
+    let fts_result = conn.execute_batch(
+        r#"
+        CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_fts USING fts5(
+            content,
+            preview,
+            content='clipboard_items',
+            content_rowid='id',
+            tokenize='unicode61'
+        );
+
+        -- Keep FTS in sync via content-table triggers.
+        CREATE TRIGGER IF NOT EXISTS clipboard_items_ai AFTER INSERT ON clipboard_items BEGIN
+            INSERT INTO clipboard_fts(rowid, content, preview) VALUES (new.id, new.content, new.preview);
+        END;
+        CREATE TRIGGER IF NOT EXISTS clipboard_items_ad AFTER DELETE ON clipboard_items BEGIN
+            INSERT INTO clipboard_fts(clipboard_fts, rowid, content, preview)
+                VALUES ('delete', old.id, old.content, old.preview);
+        END;
+        CREATE TRIGGER IF NOT EXISTS clipboard_items_au AFTER UPDATE ON clipboard_items BEGIN
+            INSERT INTO clipboard_fts(clipboard_fts, rowid, content, preview)
+                VALUES ('delete', old.id, old.content, old.preview);
+            INSERT INTO clipboard_fts(rowid, content, preview) VALUES (new.id, new.content, new.preview);
+        END;
+        "#,
+    );
+    match fts_result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            crate::services::logger::error("db", &format!("FTS5 unavailable, LIKE fallback: {e}"));
+            Ok(()) // Non-fatal: search_service degrades to LIKE.
+        }
+    }
 }
 
 #[cfg(test)]

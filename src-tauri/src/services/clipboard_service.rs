@@ -6,8 +6,12 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
 use crate::models::clipboard::{detect_type, make_preview};
-use crate::services::database_service::DatabaseService;
+use crate::security::sensitive_detector;
+use crate::services::ai_service::AiService;
+use crate::services::database_service::{CaptureMeta, DatabaseService};
 use crate::services::image_service::ImageService;
+use crate::services::settings_service::SettingsService;
+use crate::services::source_service;
 
 /// Event emitted whenever the clipboard history changes.
 pub const CLIPBOARD_CHANGED_EVENT: &str = "clipboard-changed";
@@ -36,6 +40,8 @@ pub fn start_monitor(
     app: AppHandle,
     db: Arc<DatabaseService>,
     images: Arc<ImageService>,
+    settings: Arc<SettingsService>,
+    ai: Arc<AiService>,
 ) -> SelfWriteGuard {
     let flag = Arc::new(AtomicBool::new(false));
     let guard = SelfWriteGuard(flag.clone());
@@ -44,10 +50,10 @@ pub fn start_monitor(
         let mut last_hash: Option<String> = None;
         loop {
             std::thread::sleep(POLL_INTERVAL);
-            if let Err(e) = poll_once(&app, &db, &images, &flag, &mut last_hash) {
+            if let Err(e) = poll_once(&app, &db, &images, &settings, &ai, &flag, &mut last_hash) {
                 // Transient clipboard access errors are expected; only log
                 // the error kind, never clipboard content.
-                eprintln!("[clipboard] poll skipped: {e}");
+                crate::services::logger::error("clipboard", &e);
             }
         }
     });
@@ -59,6 +65,8 @@ fn poll_once(
     app: &AppHandle,
     db: &DatabaseService,
     images: &ImageService,
+    settings: &SettingsService,
+    ai: &AiService,
     flag: &AtomicBool,
     last_hash: &mut Option<String>,
 ) -> Result<(), String> {
@@ -67,6 +75,13 @@ fn poll_once(
         if let Some(hash) = read_clipboard_hash() {
             *last_hash = Some(hash);
         }
+        return Ok(());
+    }
+
+    // Monitoring paused → track the clipboard silently so resuming doesn't
+    // import a stale entry.
+    if settings.get().pause_monitoring {
+        *last_hash = read_clipboard_hash().or_else(|| last_hash.clone());
         return Ok(());
     }
 
@@ -87,6 +102,18 @@ fn poll_once(
             }
             *last_hash = Some(hash.clone());
 
+            let s = settings.get();
+            let source = source_service::detect_source();
+            if is_excluded(&s, source.as_ref()) {
+                return Ok(());
+            }
+
+            let sensitive = s.sensitive_detection && sensitive_detector::detect(&text).is_some();
+            if sensitive && s.skip_sensitive {
+                // Detected as secret AND user asked not to store secrets.
+                return Ok(());
+            }
+
             let truncated = if text.len() > MAX_TEXT_BYTES {
                 let mut end = MAX_TEXT_BYTES;
                 while !text.is_char_boundary(end) {
@@ -98,7 +125,24 @@ fn poll_once(
             };
             let item_type = detect_type(truncated);
             let preview = make_preview(truncated);
-            db.save_item(item_type.as_str(), truncated, &hash, &preview)?;
+            let (item, duplicate) = db.save_item(
+                item_type.as_str(),
+                truncated,
+                &hash,
+                &preview,
+                &CaptureMeta { sensitive, source },
+            )?;
+            if !duplicate {
+                after_new_item(
+                    db,
+                    images,
+                    ai,
+                    &s,
+                    item.id,
+                    sensitive,
+                    item.item_type.as_str(),
+                )?;
+            }
             emit_changed(app);
         }
         Err(_) => {
@@ -113,16 +157,72 @@ fn poll_once(
             }
             *last_hash = Some(hash.clone());
 
+            let s = settings.get();
+            let source = source_service::detect_source();
+            if is_excluded(&s, source.as_ref()) {
+                return Ok(());
+            }
+
             let preview = format!("[Image {}×{}]", img.width, img.height);
             // Content holds a hash marker; the actual PNG files are keyed by
             // the item UUID returned from the insert.
-            let (item, _) = db.save_item("image", &format!("image:{hash}"), &hash, &preview)?;
-            let _ = images.save_rgba(&item.uuid, img.width as u32, img.height as u32, &img.bytes);
+            let (item, duplicate) = db.save_item(
+                "image",
+                &format!("image:{hash}"),
+                &hash,
+                &preview,
+                &CaptureMeta {
+                    sensitive: false,
+                    source,
+                },
+            )?;
+            if !duplicate {
+                let _ =
+                    images.save_rgba(&item.uuid, img.width as u32, img.height as u32, &img.bytes);
+                after_new_item(db, images, ai, &s, item.id, false, "image")?;
+            }
             emit_changed(app);
         }
     }
 
     Ok(())
+}
+
+/// Post-capture housekeeping: retention prune + optional auto AI analysis.
+fn after_new_item(
+    db: &DatabaseService,
+    images: &ImageService,
+    ai: &AiService,
+    s: &crate::models::settings::Settings,
+    id: i64,
+    sensitive: bool,
+    item_type: &str,
+) -> Result<(), String> {
+    let keepers = db.prune(s.history_limit, s.retention_days)?;
+    images.cleanup_orphans(&keepers);
+
+    if s.ai_enabled && s.ai_auto_analyze && !sensitive && item_type != "image" {
+        ai.enqueue_analyze(id);
+    }
+    Ok(())
+}
+
+/// Exclusion list check (executable name or window-title substring).
+fn is_excluded(
+    s: &crate::models::settings::Settings,
+    source: Option<&source_service::SourceInfo>,
+) -> bool {
+    let Some(src) = source else {
+        return false;
+    };
+    let exe = src.application_executable.to_lowercase();
+    let title = src.window_title.to_lowercase();
+    s.excluded_apps_list()
+        .iter()
+        .any(|app| !app.is_empty() && exe.contains(app.as_str()))
+        || s.excluded_titles_list()
+            .iter()
+            .any(|t| !t.is_empty() && title.contains(t.as_str()))
 }
 
 fn read_clipboard_hash() -> Option<String> {

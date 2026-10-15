@@ -1,28 +1,59 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClipboardItem, ItemFilter } from "./types";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { ClipboardItem, ItemFilter, Settings } from "./types";
 import { APP_NAME } from "./lib/constants";
-import { clearHistory, deleteItem, restoreItem, setItemFavorite, setItemPinned } from "./lib/tauri";
+import {
+  aiAnalyzeItem,
+  clearHistory,
+  deleteItem,
+  restoreItem,
+  setItemFavorite,
+  setItemPinned,
+  updateSettings,
+} from "./lib/tauri";
 import { useClipboard } from "./features/clipboard";
+import { useSettings } from "./features/settings/useSettings";
 import { SearchBar } from "./components/search/SearchBar";
 import { FilterChips } from "./components/search/FilterChips";
 import { ClipboardList } from "./components/clipboard/ClipboardList";
 import { EmptyState } from "./components/clipboard/EmptyState";
+import { SettingsPage } from "./components/settings/SettingsPage";
+import { AiActionModal } from "./components/ai/AiActionModal";
+import { QuickPicker } from "./components/quick/QuickPicker";
+
+const IS_QUICK_WINDOW = getCurrentWindow().label === "quick";
 
 function App() {
+  // The quick-pick window renders a completely separate compact UI.
+  if (IS_QUICK_WINDOW) return <QuickPicker />;
+  return <MainWindow />;
+}
+
+function MainWindow() {
   const [filter, setFilter] = useState<ItemFilter>("all");
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [aiTarget, setAiTarget] = useState<ClipboardItem | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { items, loading, error } = useClipboard({ filter, query });
+  const { items, loading, error, refresh } = useClipboard({ filter, query });
+  const { settings, setSettings } = useSettings();
 
   const showToast = useCallback((message: string) => {
     setToast(message);
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 1800);
+    toastTimer.current = setTimeout(() => setToast(null), 2200);
   }, []);
+
+  // Apply the theme setting (system/light/dark) to the whole window.
+  useEffect(() => {
+    if (!settings) return;
+    document.documentElement.style.colorScheme =
+      settings.theme === "system" ? "light dark" : settings.theme;
+  }, [settings?.theme]);
 
   const selected = useMemo(
     () => items[selectedIndex] as ClipboardItem | undefined,
@@ -91,18 +122,50 @@ function App() {
     }
   }, [showToast]);
 
+  const handleAnalyze = useCallback(
+    async (item: ClipboardItem) => {
+      if (item.is_sensitive) {
+        showToast("AI is blocked for sensitive clips");
+        return;
+      }
+      try {
+        await aiAnalyzeItem(item.id);
+        showToast("Queued for AI analysis");
+        void refresh();
+      } catch (e) {
+        showToast(`Failed: ${String(e)}`);
+      }
+    },
+    [showToast, refresh],
+  );
+
+  const handleSettingsChange = useCallback(
+    async (next: Settings) => {
+      setSettings(next);
+      try {
+        await updateSettings(next);
+      } catch {
+        // update_settings surfaces errors through the settings page toasts
+      }
+    },
+    [setSettings],
+  );
+
   // Global keyboard shortcuts (ignored while typing in the search box).
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
       const typing = target.tagName === "INPUT" || target.tagName === "TEXTAREA";
 
-      if (e.key === "/" && !typing) {
+      if (e.key === "Escape" && !showSettings && !aiTarget) {
+        return; // handled by child views
+      }
+      if (e.key === "/" && !typing && !showSettings) {
         e.preventDefault();
         searchRef.current?.focus();
         return;
       }
-      if (typing) return;
+      if (typing || showSettings || aiTarget) return;
 
       switch (e.key) {
         case "ArrowDown":
@@ -133,11 +196,43 @@ function App() {
         case "F":
           if (selected) void handleToggleFavorite(selected);
           break;
+        case "a":
+        case "A":
+          if (selected && settings?.ai_enabled) void handleAnalyze(selected);
+          break;
+        case "s":
+        case "S":
+          setShowSettings(true);
+          break;
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [items.length, selected, handleRestore, handleDelete, handleTogglePin, handleToggleFavorite]);
+  }, [
+    items.length,
+    selected,
+    showSettings,
+    aiTarget,
+    settings?.ai_enabled,
+    handleRestore,
+    handleDelete,
+    handleTogglePin,
+    handleToggleFavorite,
+    handleAnalyze,
+  ]);
+
+  if (showSettings && settings) {
+    return (
+      <SettingsPage
+        settings={settings}
+        onChange={(next) => void handleSettingsChange(next)}
+        onClose={() => {
+          setShowSettings(false);
+          void refresh();
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -146,9 +241,22 @@ function App() {
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-sm font-semibold tracking-tight">{APP_NAME}</h1>
           <div className="flex items-center gap-2">
+            {settings?.pause_monitoring && (
+              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                paused
+              </span>
+            )}
             <span className="text-xs text-muted-foreground">
               {items.length} clip{items.length === 1 ? "" : "s"}
             </span>
+            <button
+              type="button"
+              onClick={() => setShowSettings(true)}
+              title="Settings (S)"
+              className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              ⚙ Settings
+            </button>
             <button
               type="button"
               onClick={handleClearAll}
@@ -184,6 +292,7 @@ function App() {
             onTogglePin={(item) => void handleTogglePin(item)}
             onToggleFavorite={(item) => void handleToggleFavorite(item)}
             onDelete={(item) => void handleDelete(item)}
+            onAi={settings?.ai_enabled ? (item) => setAiTarget(item) : undefined}
           />
         )}
       </main>
@@ -194,9 +303,23 @@ function App() {
         <span className="mr-3">Enter copy</span>
         <span className="mr-3">P pin</span>
         <span className="mr-3">F favorite</span>
+        {settings?.ai_enabled && <span className="mr-3">A analyze</span>}
         <span className="mr-3">Del delete</span>
-        <span>/ search</span>
+        <span className="mr-3">/ search</span>
+        <span>S settings</span>
       </footer>
+
+      {/* AI actions modal */}
+      {aiTarget && (
+        <AiActionModal
+          item={aiTarget}
+          onClose={() => {
+            setAiTarget(null);
+            void refresh();
+          }}
+          onCopied={() => void refresh()}
+        />
+      )}
 
       {/* Toast */}
       {toast && (
