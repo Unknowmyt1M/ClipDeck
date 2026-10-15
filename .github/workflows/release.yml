@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Select installer type to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - nsis
+          - msi
+      create_release:
+        description: 'Publish as a GitHub Release (tag)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ClipDeck Installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: 'pnpm'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Get app version
+        id: version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          echo "version=$($pkg.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Build Tauri app
+        shell: pwsh
+        run: |
+          $BUILD_TYPE = "${{ github.event.inputs.build_type || 'all' }}"
+          switch ($BUILD_TYPE) {
+            "nsis" {
+              pnpm tauri build --bundles nsis
+            }
+            "msi" {
+              pnpm tauri build --bundles msi
+            }
+            default {
+              pnpm tauri build
+            }
+          }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipdeck-v${{ steps.version.outputs.version }}-${{ github.run_number }}
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: ${{ github.event.inputs.create_release == 'true' || github.event.inputs.create_release == true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}-build.${{ github.run_number }}"
+          name: "ClipDeck v${{ steps.version.outputs.version }} (Build #${{ github.run_number }})"
+          draft: false
+          prerelease: true
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
