@@ -1,32 +1,7 @@
-# ClipDeck
+# Tauri + React + Typescript
 
-A fast, local-first clipboard manager for Windows.
+This template should help get you started developing with Tauri, React and Typescript in Vite.
 
-Built with **Tauri 2** + **React** + **TypeScript** + **Rust** + **SQLite**. Private by default, AI-ready.
+## Recommended IDE Setup
 
-## Why ClipDeck?
-
-- ⚡ **Instant capture** — clipboard history saved locally the moment you copy
-- 🔍 **Fast search** — find anything you've copied, instantly
-- 🔒 **Privacy first** — your clipboard never leaves your device unless you explicitly enable AI features
-- 🪶 **Native & light** — small footprint, system-tray resident, keyboard-first UX
-- 🧠 **AI-ready** — optional AI tagging, categorization, and semantic search (coming soon)
-
-## Status
-
-🚧 In active development — Phase 0 (Foundation).
-
-## Tech Stack
-
-| Layer     | Technology            |
-| --------- | --------------------- |
-| Shell     | Tauri 2               |
-| Frontend  | React + TypeScript    |
-| UI        | Tailwind CSS + shadcn/ui |
-| Core      | Rust                  |
-| Database  | SQLite (rusqlite)     |
-| AI        | Provider-agnostic abstraction |
-
-## License
-
-MIT
+- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
