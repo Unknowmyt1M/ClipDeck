@@ -143,3 +143,28 @@ Phase plan follows the Hermes master prompt. Each phase is shippable on its own.
   skipped (exports carry no PNG bytes), sensitive items re-flagged by the
   local detector and skipped when *Never store detected secrets* is on,
   pins/favorites/usage/tags/AI summaries restored — all in one transaction
+
+## Post-v1 hardening — Bug-fix batch 3 ✅
+- **Quick-pick paste actually lands now**: Windows foreground-lock denies
+  `SetForegroundWindow` from a background process (our picker just hid),
+  so focus never returned to the app the user was typing in and the paste
+  silently never happened. `paste_into` now uses the documented
+  `AttachThreadInput` workaround (attach input queue → focus → detach),
+  still verifies the target owns the foreground before sending Ctrl+V,
+  and the paste target is cleared (not left stale) when ClipDeck itself
+  was focused before the picker opened
+- **Theme setting works**: replaced CSS `light-dark()` tokens (whose
+  resolution silently depends on per-element `color-scheme` handling in
+  each WebView2 build) with explicit light/dark variables toggled by a
+  `dark` class on `<html>` — `src/lib/theme.ts` applies Light/Dark
+  directly and follows *system* live via `prefers-color-scheme`. The
+  quick-picker window now applies the saved theme too (it is a separate
+  webview document and previously always rendered in the system default)
+- **Quick picker shows image thumbnails**: image clips render an 8×8
+  `ImageThumb` (lazy-loaded, same IPC path as the main list) instead of a
+  plain type badge
+- **Global hotkey field captures combos**: the settings input is now a
+  key-capture field (`keydown` + `preventDefault`) — pressing e.g.
+  Ctrl+Shift+V records the combo instead of triggering the webview's
+  native paste into the field; Backspace clears, only parser-accepted
+  keys (letters/digits/F-keys/Space/Enter + modifiers) are recorded
