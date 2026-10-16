@@ -29,6 +29,14 @@ const VALUE_NAME: &str = "ClipDeck";
 const ERROR_FILE_NOT_FOUND: u32 = 2;
 /// ASCII 'V' — the second half of Ctrl+V.
 const V_KEY: u16 = 0x56;
+/// How long the paste target must hold the foreground *continuously*
+/// before the keystrokes are sent. Browsers and Electron-style apps
+/// restore focus to the field the user was typing in asynchronously —
+/// AFTER the window itself is already foreground — and keystrokes sent
+/// in that gap are swallowed, so the paste silently disappears.
+const SETTLE_MS: u64 = 300;
+/// Overall budget for focus + settle before giving up (never paste blind).
+const FOCUS_DEADLINE_MS: u64 = 3000;
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -128,14 +136,20 @@ pub fn foreground_window() -> Option<isize> {
 ///
 /// Windows blocks `SetForegroundWindow` for any process that does not own
 /// the foreground (the "foreground lock") — exactly our situation after the
-/// quick picker hides itself: the naive call is denied, focus never returns
-/// to the app the user was typing in, and the paste silently never happens.
-/// The documented workaround is to temporarily attach our thread's input
-/// queue to the target's queue, which makes the activation allowed; we
-/// detach immediately after.
+/// quick picker hides itself. The documented workaround is to temporarily
+/// attach our thread's input queue to the target's queue, which makes the
+/// activation allowed; we detach immediately after.
 ///
-/// Keystrokes are only sent once the target *actually* owns the foreground
-/// — firing blindly could paste the clip into the wrong window.
+/// Sending the keystrokes the instant the window becomes foreground is not
+/// enough: browsers and Electron-style apps restore focus to the field the
+/// user was typing in asynchronously, *after* the window is already
+/// foreground — keys sent in that gap are swallowed and the paste silently
+/// disappears. So the target must HOLD the foreground for a continuous
+/// settle window before the keys go out, and the keys themselves are
+/// spaced like real typing.
+///
+/// Keystrokes are only sent while the target verifiably owns the
+/// foreground — firing blindly could paste the clip into the wrong window.
 /// Error strings never contain clipboard content.
 pub fn paste_into(hwnd: isize) -> Result<(), String> {
     let target = hwnd as HWND;
@@ -147,35 +161,56 @@ pub fn paste_into(hwnd: isize) -> Result<(), String> {
             ShowWindow(target, SW_RESTORE);
         }
 
-        // Hiding our foreground window usually re-activates the previous
-        // one on its own, so check first — only force when needed.
-        let mut focused = GetForegroundWindow() == target;
         let target_thread = GetWindowThreadProcessId(target, ptr::null_mut());
         let our_thread = GetCurrentThreadId();
-        for _ in 0..20 {
-            if focused {
-                break;
-            }
-            // Foreground-lock workaround (see doc comment).
+        // Foreground-lock workaround: attach our input queue to the
+        // target's for the duration of the activation call. (Lexically
+        // inside the outer `unsafe` block — closures inherit that context.)
+        let force_focus = || {
             AttachThreadInput(our_thread, target_thread, 1);
             let _ = SetForegroundWindow(target);
             AttachThreadInput(our_thread, target_thread, 0);
+        };
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(FOCUS_DEADLINE_MS);
+
+        // Phase 1 — make the target own the foreground. The shell usually
+        // hands focus back when our picker hides; force it otherwise.
+        while GetForegroundWindow() != target {
+            if std::time::Instant::now() >= deadline {
+                return Err("could not focus the paste target window".into());
+            }
+            force_focus();
             std::thread::sleep(std::time::Duration::from_millis(50));
-            focused = GetForegroundWindow() == target;
-        }
-        if !focused {
-            return Err("could not focus the paste target window".into());
         }
 
-        // Brief settle so the target processes activation before the
-        // keystrokes arrive (caret / input queue handoff).
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        // Phase 2 — stability + settle: the target must HOLD the foreground
+        // continuously for SETTLE_MS so the app has time to restore its
+        // caret/field focus before the keystrokes arrive. Focus stolen
+        // mid-window means something else came up — refocus and restart
+        // the count, or give up at the deadline (never paste blind).
+        let mut stable_ms: u64 = 0;
+        while stable_ms < SETTLE_MS {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if GetForegroundWindow() == target {
+                stable_ms += 50;
+                continue;
+            }
+            force_focus();
+            stable_ms = 0;
+            if std::time::Instant::now() >= deadline {
+                return Err("paste target never kept the foreground".into());
+            }
+        }
+
         send_ctrl_v();
     }
     Ok(())
 }
 
-/// Synthesize Ctrl+V (Ctrl down, V down, V up, Ctrl up).
+/// Synthesize Ctrl+V — key events are spaced like real typing; some apps
+/// swallow batched synthetic input that arrives faster than a human could
+/// press it.
 unsafe fn send_ctrl_v() {
     let key = |vk: u16, flags: u32| INPUT {
         r#type: INPUT_KEYBOARD,
@@ -189,18 +224,20 @@ unsafe fn send_ctrl_v() {
             },
         },
     };
-    let inputs = [
-        key(VK_CONTROL, 0),
-        key(V_KEY, 0),
-        key(V_KEY, KEYEVENTF_KEYUP),
-        key(VK_CONTROL, KEYEVENTF_KEYUP),
+    let sequence = [
+        (VK_CONTROL, 0u32),
+        (V_KEY, 0u32),
+        (V_KEY, KEYEVENTF_KEYUP),
+        (VK_CONTROL, KEYEVENTF_KEYUP),
     ];
-    unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        );
+    for (i, &(vk, flags)) in sequence.iter().enumerate() {
+        let input = key(vk, flags);
+        unsafe {
+            SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        }
+        if i + 1 < sequence.len() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 }
 

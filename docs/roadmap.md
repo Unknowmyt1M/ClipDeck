@@ -150,9 +150,11 @@ Phase plan follows the Hermes master prompt. Each phase is shippable on its own.
   so focus never returned to the app the user was typing in and the paste
   silently never happened. `paste_into` now uses the documented
   `AttachThreadInput` workaround (attach input queue → focus → detach),
-  still verifies the target owns the foreground before sending Ctrl+V,
-  and the paste target is cleared (not left stale) when ClipDeck itself
-  was focused before the picker opened
+  requires the target to *hold* the foreground for a 300 ms settle window
+  before sending (browsers/Electron restore their caret asynchronously —
+  keys sent in that gap were swallowed), spaces the Ctrl+V key events like
+  real typing, and the paste target is cleared (not left stale) when
+  ClipDeck itself was focused before the picker opened
 - **Theme setting works**: replaced CSS `light-dark()` tokens (whose
   resolution silently depends on per-element `color-scheme` handling in
   each WebView2 build) with explicit light/dark variables toggled by a
