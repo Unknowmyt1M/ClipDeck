@@ -77,3 +77,20 @@ Phase plan follows the Hermes master prompt. Each phase is shippable on its own.
 - Settings UI (General · Privacy · AI · Statistics), keyboard-first flows kept
 - ⏳ Deferred: auto-update (needs signing keys + update endpoint), code signing
   (needs a certificate), formal accessibility audit
+
+## Post-v1 hardening — Bug-fix batch ✅
+- Quick picker: window-level key handling (Esc / ↑↓ / Enter work even when DOM
+  focus sits on `body`), input re-focused with a fresh query on every focus
+  gain, window auto-hides on focus loss (native-popup behaviour)
+- AI action modal now closes on Esc (own window listener; the main window
+  shortcut handler bails while the modal is open)
+- Global hotkey rebind registers the new combo first and unregisters the
+  previous one — no lingering duplicate shortcuts
+- `ai_transform` runs the on-device sensitive detector again before any
+  network call, matching the background queue's double gate
+- Restore self-write guard is two-phase (`writing → armed → idle`), removing
+  the 400 ms poll race that could re-capture ClipDeck's own writes
+- Exclusion lists are edited as plain lines (no double-encoded JSON) and the
+  Rust parser heals values corrupted by older builds
+- FTS result hydration batched: one SELECT + one `attach_ai` pass instead of
+  three queries per hit
