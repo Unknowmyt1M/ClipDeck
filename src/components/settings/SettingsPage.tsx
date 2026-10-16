@@ -46,6 +46,21 @@ function exclusionsToLines(raw: string): string {
   return clean(raw);
 }
 
+/**
+ * Map a keydown event to the shortcut-parser key name (letters, digits,
+ * F-keys, Space, Enter), or null to ignore the press (arrows, etc. — the
+ * parser does not accept them and the combo would be rejected anyway).
+ * Structural param type so React's synthetic KeyboardEvent is accepted.
+ */
+function hotkeyKeyFromEvent(e: { key: string; code: string }): string | null {
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
+  if (/^F\d{1,2}$/.test(e.key)) return e.key;
+  if (e.code === "Space") return "Space";
+  if (e.key === "Enter") return "Enter";
+  return null;
+}
+
 /** Full-page settings view: General · Privacy · AI · Statistics. */
 export function SettingsPage({ settings, onChange, onClose }: SettingsPageProps) {
   const [section, setSection] = useState<SectionId>("general");
@@ -168,17 +183,39 @@ function GeneralSection({
           <div className="flex gap-2">
             <input
               value={hotkey}
-              onChange={(e) => setHotkey(e.target.value)}
+              readOnly
+              onKeyDown={(e) => {
+                // Capture the pressed combination instead of typing text.
+                // preventDefault stops the webview's native paste (Ctrl+V
+                // used to paste the clipboard INTO this field).
+                e.preventDefault();
+                if (e.key === "Backspace" || e.key === "Delete") {
+                  setHotkey("");
+                  return;
+                }
+                // Modifier-only presses just wait for the real key.
+                if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+                const key = hotkeyKeyFromEvent(e);
+                if (!key) return;
+                const parts: string[] = [];
+                if (e.ctrlKey) parts.push("Ctrl");
+                if (e.altKey) parts.push("Alt");
+                if (e.shiftKey) parts.push("Shift");
+                parts.push(key);
+                setHotkey(parts.join("+"));
+              }}
+              onPaste={(e) => e.preventDefault()}
               onBlur={() => {
                 const trimmed = hotkey.trim();
                 if (trimmed !== settings.global_hotkey) void patch({ global_hotkey: trimmed });
               }}
-              placeholder="Ctrl+Shift+V"
+              placeholder="Click, then press a shortcut"
               className="flex-1 rounded-md border border-input bg-card px-2.5 py-1.5 text-sm outline-none focus:border-ring"
             />
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Format: Ctrl+Shift+V, Ctrl+Alt+Space, … — applied immediately, invalid combos are rejected.
+            Click the field and press the combination (e.g. Ctrl+Shift+V). Backspace clears;
+            avoid combos you use everywhere (Ctrl+C/V), invalid combos are rejected on save.
           </p>
         </Field>
         <Toggle

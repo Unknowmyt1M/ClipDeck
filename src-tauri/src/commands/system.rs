@@ -10,9 +10,11 @@ use crate::services::windows_service;
 /// for auto-paste after a pick. HWND as isize (Send-type across threads).
 static PASTE_TARGET: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
 
-/// Remember the paste target (call on every quick-window show).
-pub(crate) fn set_paste_target(hwnd: isize) {
-    *PASTE_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = Some(hwnd);
+/// Remember the paste target (call on every quick-window show). `None`
+/// (ClipDeck itself was focused) clears any stale target so a pick can
+/// never paste into an old window by accident.
+pub(crate) fn set_paste_target(hwnd: Option<isize>) {
+    *PASTE_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = hwnd;
 }
 
 /// Last remembered paste target, if any.
@@ -146,10 +148,10 @@ pub fn toggle_quick_window(app: AppHandle) -> Result<(), String> {
     } else {
         // Capture the paste target BEFORE taking foreground: this is the
         // window the user was working in and where the picked clip should
-        // land. (Skips ClipDeck's own windows — see `foreground_window`.)
-        if let Some(hwnd) = windows_service::foreground_window() {
-            set_paste_target(hwnd);
-        }
+        // land. `None` (ClipDeck itself was focused) clears any stale
+        // target so we never paste into an old window by accident.
+        // (Skips ClipDeck's own windows — see `foreground_window`.)
+        set_paste_target(windows_service::foreground_window());
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

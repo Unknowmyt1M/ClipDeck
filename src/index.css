@@ -1,30 +1,59 @@
 @import "tailwindcss";
 
 /*
- * ClipDeck theme — follows the Windows system setting by default.
- * Dark/light tokens can be overridden later via a `light`/`dark`
- * class on <html> when a user-selected theme setting is added.
+ * ClipDeck theme — explicit light/dark tokens toggled by the `dark`
+ * class on <html> (see src/lib/theme.ts). Explicit tokens instead of the
+ * CSS light-dark() function because resolution must be deterministic on
+ * every WebView2 build and across BOTH windows (main + quick picker).
  */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+  --clip-background: #fafafa;
+  --clip-foreground: #171717;
+  --clip-card: #ffffff;
+  --clip-muted: #f3f4f6;
+  --clip-muted-foreground: #6b7280;
+  --clip-border: #e5e7eb;
+  --clip-input: #e5e7eb;
+  --clip-accent: #f3f4f6;
+  --clip-primary: #171717;
+  --clip-primary-foreground: #fafafa;
+  --clip-destructive: #dc2626;
+  --clip-ring: #d1d5db;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --clip-background: #0e0e11;
+  --clip-foreground: #ececf1;
+  --clip-card: #17171c;
+  --clip-muted: #22232a;
+  --clip-muted-foreground: #9ba1a6;
+  --clip-border: #2b2c33;
+  --clip-input: #2b2c33;
+  --clip-accent: #22232a;
+  --clip-primary: #ececf1;
+  --clip-primary-foreground: #0e0e11;
+  --clip-destructive: #ef4444;
+  --clip-ring: #3a3b45;
 }
 
 @theme inline {
-  --color-background: light-dark(#fafafa, #0e0e11);
-  --color-foreground: light-dark(#171717, #ececf1);
-  --color-card: light-dark(#ffffff, #17171c);
-  --color-card-foreground: light-dark(#171717, #ececf1);
-  --color-muted: light-dark(#f3f4f6, #22232a);
-  --color-muted-foreground: light-dark(#6b7280, #9ba1a6);
-  --color-border: light-dark(#e5e7eb, #2b2c33);
-  --color-input: light-dark(#e5e7eb, #2b2c33);
-  --color-accent: light-dark(#f3f4f6, #22232a);
-  --color-accent-foreground: light-dark(#171717, #ececf1);
-  --color-primary: light-dark(#171717, #ececf1);
-  --color-primary-foreground: light-dark(#fafafa, #0e0e11);
-  --color-destructive: light-dark(#dc2626, #ef4444);
-  --color-ring: light-dark(#d1d5db, #3a3b45);
+  --color-background: var(--clip-background);
+  --color-foreground: var(--clip-foreground);
+  --color-card: var(--clip-card);
+  --color-card-foreground: var(--clip-foreground);
+  --color-muted: var(--clip-muted);
+  --color-muted-foreground: var(--clip-muted-foreground);
+  --color-border: var(--clip-border);
+  --color-input: var(--clip-input);
+  --color-accent: var(--clip-accent);
+  --color-accent-foreground: var(--clip-foreground);
+  --color-primary: var(--clip-primary);
+  --color-primary-foreground: var(--clip-primary-foreground);
+  --color-destructive: var(--clip-destructive);
+  --color-ring: var(--clip-ring);
   --radius: 0.5rem;
 }
 
@@ -35,8 +64,8 @@ body,
 }
 
 body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
+  background-color: var(--clip-background);
+  color: var(--clip-foreground);
   font-family:
     "Segoe UI Variable",
     "Segoe UI",

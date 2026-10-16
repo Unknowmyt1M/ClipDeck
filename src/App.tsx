@@ -12,6 +12,7 @@ import {
 } from "./lib/tauri";
 import { useClipboard } from "./features/clipboard";
 import { useSettings } from "./features/settings/useSettings";
+import { applyTheme } from "./lib/theme";
 import { SearchBar } from "./components/search/SearchBar";
 import { FilterChips } from "./components/search/FilterChips";
 import { ClipboardList } from "./components/clipboard/ClipboardList";
@@ -48,10 +49,11 @@ function MainWindow() {
   }, []);
 
   // Apply the theme setting (system/light/dark) to the whole window.
+  // The helper toggles the `dark` class + color-scheme and, for "system",
+  // keeps a live prefers-color-scheme listener.
   useEffect(() => {
     if (!settings) return;
-    document.documentElement.style.colorScheme =
-      settings.theme === "system" ? "light dark" : settings.theme;
+    applyTheme(settings.theme);
   }, [settings?.theme]);
 
   const selected = useMemo(

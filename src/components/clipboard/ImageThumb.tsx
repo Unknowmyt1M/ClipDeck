@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { getItemImage } from "../../lib/tauri";
+import { cn } from "../../lib/utils";
 
 interface ImageThumbProps {
   id: number;
+  /** Outer box size (width + height). */
+  className?: string;
 }
 
 /** Lazy-loads and renders an image item's thumbnail. */
-export function ImageThumb({ id }: ImageThumbProps) {
+export function ImageThumb({ id, className = "h-12 w-12" }: ImageThumbProps) {
   const [src, setSrc] = useState<string | null>(null);
 
   useEffect(() => {
@@ -25,7 +28,12 @@ export function ImageThumb({ id }: ImageThumbProps) {
 
   if (!src) {
     return (
-      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+      <div
+        className={cn(
+          "flex shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground",
+          className,
+        )}
+      >
         <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
           <path
             strokeLinecap="round"
@@ -41,7 +49,7 @@ export function ImageThumb({ id }: ImageThumbProps) {
     <img
       src={src}
       alt="Clipboard image"
-      className="h-12 w-12 shrink-0 rounded-md object-cover"
+      className={cn("shrink-0 rounded-md object-cover", className)}
       draggable={false}
     />
   );

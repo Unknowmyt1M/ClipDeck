@@ -12,7 +12,9 @@ use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_WRITE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteValueW,
     RegSetValueExW,
 };
-use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL,
 };
@@ -124,9 +126,16 @@ pub fn foreground_window() -> Option<isize> {
 
 /// Focus `hwnd` and send Ctrl+V into it.
 ///
-/// Windows frequently refuses `SetForegroundWindow`, so focus is polled and
-/// verified: keystrokes are only sent once the target *actually* owns the
-/// foreground — firing blindly could paste the clip into the wrong window.
+/// Windows blocks `SetForegroundWindow` for any process that does not own
+/// the foreground (the "foreground lock") — exactly our situation after the
+/// quick picker hides itself: the naive call is denied, focus never returns
+/// to the app the user was typing in, and the paste silently never happens.
+/// The documented workaround is to temporarily attach our thread's input
+/// queue to the target's queue, which makes the activation allowed; we
+/// detach immediately after.
+///
+/// Keystrokes are only sent once the target *actually* owns the foreground
+/// — firing blindly could paste the clip into the wrong window.
 /// Error strings never contain clipboard content.
 pub fn paste_into(hwnd: isize) -> Result<(), String> {
     let target = hwnd as HWND;
@@ -138,14 +147,21 @@ pub fn paste_into(hwnd: isize) -> Result<(), String> {
             ShowWindow(target, SW_RESTORE);
         }
 
-        let mut focused = false;
+        // Hiding our foreground window usually re-activates the previous
+        // one on its own, so check first — only force when needed.
+        let mut focused = GetForegroundWindow() == target;
+        let target_thread = GetWindowThreadProcessId(target, ptr::null_mut());
+        let our_thread = GetCurrentThreadId();
         for _ in 0..20 {
-            SetForegroundWindow(target);
-            if GetForegroundWindow() == target {
-                focused = true;
+            if focused {
                 break;
             }
+            // Foreground-lock workaround (see doc comment).
+            AttachThreadInput(our_thread, target_thread, 1);
+            let _ = SetForegroundWindow(target);
+            AttachThreadInput(our_thread, target_thread, 0);
             std::thread::sleep(std::time::Duration::from_millis(50));
+            focused = GetForegroundWindow() == target;
         }
         if !focused {
             return Err("could not focus the paste target window".into());

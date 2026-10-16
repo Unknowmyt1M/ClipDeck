@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ClipboardItem } from "../../types";
 import * as tauri from "../../lib/tauri";
+import { applyTheme } from "../../lib/theme";
 import { cn, truncate } from "../../lib/utils";
+import { ImageThumb } from "../clipboard/ImageThumb";
 
 /**
  * Compact Ctrl+Shift+V picker (Phase 2): type → arrow → Enter to paste.
@@ -13,6 +15,15 @@ export function QuickPicker() {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // The quick window is a separate webview document — it must apply the
+  // saved theme itself (the main window's effect does not reach here).
+  useEffect(() => {
+    void tauri
+      .getSettings()
+      .then((s) => applyTheme(s.theme))
+      .catch(() => applyTheme("system"));
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -139,9 +150,13 @@ export function QuickPicker() {
               )}
             >
               <span className="flex items-center gap-2">
-                <span className="inline-flex h-4 shrink-0 items-center rounded bg-muted px-1 text-[9px] font-medium text-muted-foreground uppercase">
-                  {item.type}
-                </span>
+                {item.type === "image" ? (
+                  <ImageThumb id={item.id} className="h-8 w-8" />
+                ) : (
+                  <span className="inline-flex h-4 shrink-0 items-center rounded bg-muted px-1 text-[9px] font-medium text-muted-foreground uppercase">
+                    {item.type}
+                  </span>
+                )}
                 <span className="min-w-0 flex-1 truncate text-xs text-foreground selectable">
                   {item.preview || truncate(item.content, 120)}
                 </span>
@@ -153,7 +168,7 @@ export function QuickPicker() {
       </div>
 
       <div className="flex items-center justify-between border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">
-        <span>↑↓ navigate · Enter copy · Esc close</span>
+        <span>↑↓ navigate · Enter paste · Esc close</span>
         <span>{items.length} clips</span>
       </div>
     </div>
