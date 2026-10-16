@@ -48,10 +48,11 @@ export function QuickPicker() {
 
   const pick = useCallback(async (item: ClipboardItem) => {
     try {
-      await tauri.restoreItem(item.id);
-      await tauri.hideQuickWindow();
+      // Rust copies the clip, hides the picker and (when enabled) pastes
+      // it into the window that was active before the picker opened.
+      await tauri.restoreItemPaste(item.id);
     } catch {
-      // keep the window open so the user can retry
+      // Restore failed → Rust never hid the window: keep it open to retry.
     }
   }, []);
 

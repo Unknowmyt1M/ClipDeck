@@ -24,20 +24,28 @@ impl SettingsService {
 
     /// Cheap snapshot for hot paths (monitor loop / AI worker).
     pub fn get(&self) -> Settings {
-        self.cache.read().expect("settings lock poisoned").clone()
+        self.cache.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Read-modify-write via closure, persist, refresh cache.
+    ///
+    /// The write lock is held across the whole sequence: releasing it
+    /// between the read and the persist let two concurrent updates clobber
+    /// each other (lost update).
     pub fn update(&self, f: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
-        let mut next = self.get();
+        let mut guard = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut next = guard.clone();
         f(&mut next);
-        self.replace(next)
+        self.db.persist_settings(&next)?;
+        *guard = next.clone();
+        Ok(next)
     }
 
     /// Replace all settings (frontend save).
     pub fn replace(&self, next: Settings) -> Result<Settings, String> {
+        let mut guard = self.cache.write().unwrap_or_else(|e| e.into_inner());
         self.db.persist_settings(&next)?;
-        *self.cache.write().expect("settings lock poisoned") = next.clone();
+        *guard = next.clone();
         Ok(next)
     }
 }

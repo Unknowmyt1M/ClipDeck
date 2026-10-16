@@ -27,7 +27,7 @@ pub fn init(logs_dir: PathBuf) {
     *LOG_PATH
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .expect("log slot") = Some(path);
+        .unwrap_or_else(|e| e.into_inner()) = Some(path);
     install_panic_hook();
 }
 
@@ -37,8 +37,20 @@ pub fn log(line: &str) {
     eprintln!("[{stamp}] {line}");
     let slot = LOG_PATH.get();
     let Some(slot) = slot else { return };
-    let guard = slot.lock().expect("log slot");
+    // Recover instead of panicking: a poisoned logger must not take the
+    // panic hook (or any caller) down with it.
+    let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
     let Some(path) = guard.as_ref() else { return };
+
+    // Rotate here, not only at init: a long-running session could grow the
+    // file past the cap unbounded between restarts. Writes are rare (error
+    // scope only), so the metadata check is free in practice.
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > MAX_LOG_BYTES
+    {
+        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    }
+
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "[{stamp}] {line}");
     }
@@ -80,7 +92,7 @@ fn chrono_free_timestamp() -> String {
     let y = if m <= 2 { y + 1 } else { y };
     let secs_of_day = now.rem_euclid(86_400);
     format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}Z",
         secs_of_day / 3600,
         (secs_of_day % 3600) / 60,
         secs_of_day % 60
@@ -94,6 +106,10 @@ mod tests {
     #[test]
     fn timestamp_is_well_formed() {
         let ts = chrono_free_timestamp();
+        // The clock is UTC — mark it so log timestamps aren't misread as
+        // local time.
+        assert!(ts.ends_with('Z'));
+        let ts = ts.trim_end_matches('Z');
         assert_eq!(ts.len(), 19);
         assert_eq!(ts.chars().filter(|c| *c == '-').count(), 2);
         assert_eq!(ts.chars().filter(|c| *c == ':').count(), 2);

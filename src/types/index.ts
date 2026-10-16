@@ -46,6 +46,8 @@ export interface Settings {
   global_hotkey: string;
   history_limit: number;
   close_to_tray: boolean;
+  /** Paste into the previous app after picking in the quick window. */
+  auto_paste: boolean;
   pause_monitoring: boolean;
   sensitive_detection: boolean;
   skip_sensitive: boolean;
@@ -60,7 +62,6 @@ export interface Settings {
   ai_model_name: string;
   ai_free: boolean;
   ai_auto_analyze: boolean;
-  ai_allow_general: boolean;
 }
 
 /** One OpenRouter model, classified free vs paid. */
@@ -105,6 +106,15 @@ export interface Stats {
 export interface ExportResult {
   path: string;
   items: number;
+}
+
+/** Outcome of merging an export file back into the history. */
+export interface ImportResult {
+  imported: number;
+  skipped_duplicates: number;
+  skipped_sensitive: number;
+  skipped_images: number;
+  invalid: number;
 }
 
 export interface WipeResult {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::models::clipboard::ClipboardItem;
 use crate::services::ai_service::AiService;
@@ -51,6 +51,11 @@ pub fn get_items(
 /// Restore an item: copy it back to the system clipboard and bump usage.
 #[tauri::command]
 pub fn restore_item(state: State<'_, AppState>, id: i64) -> Result<ClipboardItem, String> {
+    restore_inner(&state, id)
+}
+
+/// Core restore logic shared by `restore_item` and `restore_and_paste`.
+fn restore_inner(state: &AppState, id: i64) -> Result<ClipboardItem, String> {
     let item = state
         .db
         .get_item(id)?
@@ -81,6 +86,41 @@ pub fn restore_item(state: State<'_, AppState>, id: i64) -> Result<ClipboardItem
         .ok_or_else(|| format!("item {id} not found after restore"))
 }
 
+/// Quick-pick restore: copy to the clipboard, hide the quick window, then —
+/// when enabled — focus the window that was active before the picker opened
+/// and send Ctrl+V there. Paste failures never fail the restore (the clip
+/// is already on the clipboard); they are logged without content.
+#[tauri::command]
+pub fn restore_and_paste(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<ClipboardItem, String> {
+    let item = restore_inner(&state, id)?;
+
+    // Hide first so the quick window doesn't hold foreground focus.
+    if let Some(window) = app.get_webview_window("quick")
+        && window.is_visible().unwrap_or(false)
+    {
+        let _ = window.hide();
+    }
+
+    if state.settings.get().auto_paste
+        && let Some(target) = crate::commands::system::paste_target()
+    {
+        std::thread::spawn(move || {
+            // Give Windows a beat to process the hide (and shell focus
+            // hand-back) before we explicitly focus the target.
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            if let Err(e) = crate::services::windows_service::paste_into(target) {
+                crate::services::logger::error("paste", &e);
+            }
+        });
+    }
+
+    Ok(item)
+}
+
 /// Toggle the pinned flag.
 #[tauri::command]
 pub fn set_item_pinned(
@@ -104,16 +144,23 @@ pub fn set_item_favorite(
 /// Delete a single item (and its image files, if any).
 #[tauri::command]
 pub fn delete_item(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
-    if let Some(item) = state.db.get_item(id)? {
+    // DB row first, files second: deleting files before a failing DB delete
+    // would lose the image while keeping a row whose thumbnail is gone.
+    let item = state.db.get_item(id)?;
+    let removed = state.db.delete_item(id)?;
+    if removed && let Some(item) = item {
         state.images.delete(&item.uuid);
     }
-    state.db.delete_item(id)
+    Ok(removed)
 }
 
 /// Clear all history except pinned items.
 #[tauri::command]
 pub fn clear_history(state: State<'_, AppState>) -> Result<ClearResult, String> {
-    let deleted = state.db.clear_history()?;
+    let (deleted, image_uuids) = state.db.clear_history()?;
+    // The PNGs of removed image items must go too — otherwise "clear" left
+    // every screenshot on disk indefinitely.
+    state.images.delete_many(&image_uuids);
     Ok(ClearResult { deleted })
 }
 

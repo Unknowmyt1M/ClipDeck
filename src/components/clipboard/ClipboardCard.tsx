@@ -40,7 +40,14 @@ export function ClipboardCard({
       onClick={onSelect}
       onDoubleClick={onRestore}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onRestore();
+        if (e.key === "Enter") {
+          // The app-level window Enter handler restores the *selected*
+          // item too — without stopping propagation a focused card fired
+          // both (double restore → use_count +2).
+          e.preventDefault();
+          e.stopPropagation();
+          onRestore();
+        }
       }}
       className={cn(
         "group cursor-pointer rounded-lg border p-3 transition-colors",

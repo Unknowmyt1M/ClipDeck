@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
-import type { ReactNode } from "react";
-import type { AiStatus, ExportResult, Settings, Stats, WipeResult } from "../../types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ChangeEvent, ReactNode } from "react";
+import type { AiStatus, ExportResult, ImportResult, Settings, Stats, WipeResult } from "../../types";
 import * as tauri from "../../lib/tauri";
 import { cn } from "../../lib/utils";
 import { ModelSelect } from "./ModelSelect";
@@ -189,6 +189,18 @@ function GeneralSection({
         />
       </Section>
 
+      <Section
+        title="Quick picker"
+        desc="What happens after you pick a clip with the global hotkey."
+      >
+        <Toggle
+          label="Paste into the last active window"
+          description="Focuses the app you were using before the picker and sends Ctrl+V. Off = only copy to clipboard."
+          checked={settings.auto_paste}
+          onChange={(v) => void patch({ auto_paste: v })}
+        />
+      </Section>
+
       <Section title="History" desc="How much clipboard history is kept.">
         <Field label="Maximum items (10–100,000)">
           <input
@@ -219,8 +231,10 @@ function PrivacySection({
   const [apps, setApps] = useState(() => exclusionsToLines(settings.excluded_apps));
   const [titles, setTitles] = useState(() => exclusionsToLines(settings.excluded_titles));
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   const saveList = (raw: string, key: "excluded_apps" | "excluded_titles") => {
     const arr = raw
@@ -239,6 +253,29 @@ function PrivacySection({
       notify(`Export failed: ${String(e)}`);
     } finally {
       setExporting(false);
+    }
+  };
+
+  /** Read a picked export file and merge it into the history (on-device). */
+  const handleImportFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset so picking the same file again re-triggers the change event.
+    e.target.value = "";
+    if (!file) return;
+    setImporting(true);
+    try {
+      const json = await file.text();
+      const res: ImportResult = await tauri.importHistory(json);
+      const parts = [`${res.imported} imported`];
+      if (res.skipped_duplicates) parts.push(`${res.skipped_duplicates} duplicates`);
+      if (res.skipped_sensitive) parts.push(`${res.skipped_sensitive} sensitive skipped`);
+      if (res.skipped_images) parts.push(`${res.skipped_images} images skipped`);
+      if (res.invalid) parts.push(`${res.invalid} invalid`);
+      notify(`Import — ${parts.join(" · ")}`);
+    } catch (e2) {
+      notify(`Import failed: ${String(e2)}`);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -335,6 +372,21 @@ function PrivacySection({
           >
             {exporting ? "Exporting…" : "Export history as JSON"}
           </button>
+          <button
+            type="button"
+            onClick={() => importFileRef.current?.click()}
+            disabled={importing}
+            className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent"
+          >
+            {importing ? "Importing…" : "Import from JSON"}
+          </button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => void handleImportFile(e)}
+          />
           <button
             type="button"
             onClick={() => void handleWipe()}

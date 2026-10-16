@@ -12,6 +12,7 @@ import type {
   ClipboardItemType,
   ClearResult,
   ExportResult,
+  ImportResult,
   Settings,
   Stats,
   WipeResult,
@@ -35,6 +36,15 @@ export function getItems(opts?: {
 
 export function restoreItem(id: number): Promise<ClipboardItem> {
   return invoke<ClipboardItem>("restore_item", { id });
+}
+
+/**
+ * Quick-pick restore: copies the clip, hides the picker and — when the
+ * auto-paste setting is on — pastes it into the window that was active
+ * before the picker opened.
+ */
+export function restoreItemPaste(id: number): Promise<ClipboardItem> {
+  return invoke<ClipboardItem>("restore_and_paste", { id });
 }
 
 export function setItemPinned(id: number, pinned: boolean): Promise<ClipboardItem> {
@@ -101,6 +111,11 @@ export function getStats(): Promise<Stats> {
 
 export function exportHistory(): Promise<ExportResult> {
   return invoke<ExportResult>("export_history");
+}
+
+/** Merge a ClipDeck export (raw JSON text) into the local history. */
+export function importHistory(json: string): Promise<ImportResult> {
+  return invoke<ImportResult>("import_history", { json });
 }
 
 export function wipeData(): Promise<WipeResult> {

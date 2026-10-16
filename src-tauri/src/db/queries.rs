@@ -358,10 +358,50 @@ pub fn delete_item(conn: &Connection, id: i64) -> Result<bool, String> {
     Ok(n > 0)
 }
 
-/// Delete all non-pinned items. Returns number of rows removed.
-pub fn clear_history(conn: &Connection) -> Result<usize, String> {
-    conn.execute("DELETE FROM clipboard_items WHERE is_pinned = 0", [])
-        .map_err(|e| format!("clear_history failed: {e}"))
+/// Delete all non-pinned items. Returns (rows removed, image uuids whose
+/// files the caller must delete) — without this, "Clear history" left every
+/// image PNG on disk forever.
+pub fn clear_history(conn: &Connection) -> Result<(usize, Vec<String>), String> {
+    let uuids = collect_image_uuids(conn, true)?;
+    let n = conn
+        .execute("DELETE FROM clipboard_items WHERE is_pinned = 0", [])
+        .map_err(|e| format!("clear_history failed: {e}"))?;
+    purge_orphan_sources(conn)?;
+    Ok((n, uuids))
+}
+
+/// Image item uuids; `unpinned_only` selects the clear-history set.
+fn collect_image_uuids(conn: &Connection, unpinned_only: bool) -> Result<Vec<String>, String> {
+    let sql = if unpinned_only {
+        "SELECT uuid FROM clipboard_items WHERE type = 'image' AND is_pinned = 0"
+    } else {
+        "SELECT uuid FROM clipboard_items WHERE type = 'image'"
+    };
+    let uuids: Vec<String> = conn
+        .prepare(sql)
+        .map_err(|e| format!("collect_image_uuids prepare: {e}"))?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("collect_image_uuids query: {e}"))?
+        .flatten()
+        .collect();
+    Ok(uuids)
+}
+
+/// All image item uuids (for the start-up orphan-file sweep).
+pub fn image_uuids(conn: &Connection) -> Result<Vec<String>, String> {
+    collect_image_uuids(conn, false)
+}
+
+/// Drop `sources` rows no longer referenced by any item. Provenance
+/// (app name / window title) must not outlive the clip it describes —
+/// otherwise "clear history" would still leave window titles on disk.
+pub fn purge_orphan_sources(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM sources WHERE id NOT IN \
+         (SELECT source_id FROM clipboard_items WHERE source_id IS NOT NULL)",
+        [],
+    )
+    .map_err(|e| format!("purge_orphan_sources failed: {e}"))
 }
 
 /// Count total items.
@@ -486,19 +526,24 @@ pub fn all_items(conn: &Connection) -> Result<Vec<ClipboardItem>, String> {
 
 /// Irreversibly delete every clipboard row (images handled by caller).
 /// Returns (rows_deleted, image_uuids_that_need_file_cleanup).
+///
+/// Dependent rows go with the items: `ai_metadata` / `clipboard_tags` via
+/// `ON DELETE CASCADE` (foreign keys are enabled in `migrate`), and the
+/// `sources` provenance rows (which have no FK) via an explicit orphan
+/// purge — otherwise "Wipe" would keep every captured window title.
 pub fn wipe_all(conn: &Connection) -> Result<(usize, Vec<String>), String> {
-    let uuids = {
-        let mut stmt = conn
-            .prepare("SELECT uuid FROM clipboard_items WHERE type = 'image'")
-            .map_err(|e| format!("wipe_all prepare: {e}"))?;
-        stmt.query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("wipe_all query: {e}"))?
-            .flatten()
-            .collect::<Vec<_>>()
-    };
+    let uuids = collect_image_uuids(conn, false)?;
     let n = conn
         .execute("DELETE FROM clipboard_items", [])
         .map_err(|e| format!("wipe_all failed: {e}"))?;
+    // Belt and braces: cascade should already have removed these; clear
+    // them anyway so no AI summaries survive a wipe even if a connection
+    // ever runs without the FK pragma.
+    conn.execute("DELETE FROM ai_metadata", [])
+        .map_err(|e| format!("wipe_all ai_metadata: {e}"))?;
+    conn.execute("DELETE FROM clipboard_tags", [])
+        .map_err(|e| format!("wipe_all clipboard_tags: {e}"))?;
+    purge_orphan_sources(conn)?;
     Ok((n, uuids))
 }
 
@@ -574,9 +619,71 @@ mod tests {
         let a = insert_text(&conn, "keep me");
         let _b = insert_text(&conn, "delete me");
         set_pinned(&conn, a.id, true).expect("pin");
-        let removed = clear_history(&conn).expect("clear");
+        let (removed, _uuids) = clear_history(&conn).expect("clear");
         assert_eq!(removed, 1);
         assert_eq!(count_items(&conn).expect("count"), 1);
+    }
+
+    /// Clear must report the deleted image uuids (so files can go) and must
+    /// not leave orphaned source rows (app names / window titles) behind.
+    #[test]
+    fn clear_returns_image_uuids_and_purges_sources() {
+        let conn = test_conn();
+        let src = crate::services::source_service::SourceInfo {
+            application_name: "Secret App".into(),
+            application_executable: "secret.exe".into(),
+            window_title: "very secret title".into(),
+        };
+        let src_id = insert_source(&conn, &src, now_ms()).expect("source");
+        let img = insert_item(
+            &conn,
+            "img-1",
+            "image",
+            "image:deadbeef",
+            "hash-img",
+            "[Image 1×1]",
+            now_ms(),
+        )
+        .expect("insert image");
+        conn.execute(
+            "UPDATE clipboard_items SET source_id = ?2 WHERE id = ?1",
+            params![img.id, src_id],
+        )
+        .expect("link source");
+
+        let (removed, uuids) = clear_history(&conn).expect("clear");
+        assert_eq!(removed, 1);
+        assert_eq!(uuids, vec!["img-1".to_string()]);
+
+        let sources_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0))
+            .expect("count sources");
+        assert_eq!(sources_left, 0, "orphaned sources must be purged");
+    }
+
+    /// Pinned items keep their provenance alive after a clear.
+    #[test]
+    fn clear_keeps_sources_of_pinned_items() {
+        let conn = test_conn();
+        let src = crate::services::source_service::SourceInfo {
+            application_name: "App".into(),
+            application_executable: "app.exe".into(),
+            window_title: "title".into(),
+        };
+        let src_id = insert_source(&conn, &src, now_ms()).expect("source");
+        let item = insert_text(&conn, "pinned clip");
+        conn.execute(
+            "UPDATE clipboard_items SET source_id = ?2 WHERE id = ?1",
+            params![item.id, src_id],
+        )
+        .expect("link source");
+        set_pinned(&conn, item.id, true).expect("pin");
+
+        clear_history(&conn).expect("clear");
+        let sources_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0))
+            .expect("count sources");
+        assert_eq!(sources_left, 1, "pinned item's source must survive");
     }
 
     #[test]

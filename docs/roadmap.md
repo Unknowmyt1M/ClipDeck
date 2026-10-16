@@ -94,3 +94,52 @@ Phase plan follows the Hermes master prompt. Each phase is shippable on its own.
   Rust parser heals values corrupted by older builds
 - FTS result hydration batched: one SELECT + one `attach_ai` pass instead of
   three queries per hit
+
+## Post-v1 hardening — Bug-fix batch 2 ✅
+- **Migrations are transactional** (`BEGIN IMMEDIATE` → apply → stamp
+  `user_version` → `COMMIT`); a failed migration rolls back instead of
+  bricking start-up, and a half-created legacy v1 schema is detected and
+  rebuilt. FTS is verified table+triggers (`fts_available == 4 objects`) and
+  partial states are dropped to the LIKE fallback — including on already
+  stamped databases
+- **`PRAGMA foreign_keys = ON`** — the schema's `ON DELETE CASCADE` clauses
+  actually work now (clear/delete used to leave `ai_metadata` /
+  `clipboard_tags` rows behind)
+- **Provenance GC**: `sources` rows (app name / window title) are purged
+  whenever their item is cleared, deleted, pruned or wiped — "clear
+  history" no longer leaves window titles on disk
+- **Image files**: Clear history now deletes the PNGs of removed items,
+  a failed image save drops the freshly inserted row instead of leaving a
+  broken card, duplicate captures repair missing files, delete runs DB-first
+  then files, and a start-up sweep removes orphaned image files
+- **Settings**: read-modify-write holds the write lock across persist (no
+  lost updates), `save_settings` runs in one transaction, dead
+  `ai_allow_general` setting removed
+- **Capture**: content is truncated *before* hashing (stored hash always
+  matches stored content — no phantom duplicates after a restore), prune
+  failures no longer abort a capture
+- **Autostart**: Run-key value is quoted (`C:\Program Files\...` used to
+  break) and the registry handle can no longer leak on the error path
+- **Logger**: rotates during long sessions (not only at init), mutex
+  poisoning recovers instead of panicking the panic hook, UTC timestamps
+  are marked `Z`
+- **OpenRouter**: missing/unparsable pricing is never classified as *free*
+  (the free/paid promise stays honest), AI output is normalized —
+  confidence clamped to 0–1, unknown categories mapped to `Other`
+- **Frontend**: a focused card's Enter no longer double-fires with the
+  global handler (use_count +2), wipe reports the real number of deleted
+  image files, DB mutex poisoning recovers instead of failing forever
+
+## Post-v1 features — Quick-pick paste + import ✅
+- **Auto-paste (opt-out, default ON)**: picking a clip in the quick window
+  copies it, hides the picker, focuses the window that was active before it
+  opened (captured on every show, never ClipDeck's own windows) and sends
+  Ctrl+V — only after verifying the target really owns the foreground, so a
+  clip can never land in the wrong window. Toggle: *Settings → General →
+  Quick picker*
+- **Import history**: *Settings → Privacy → Your data → Import from JSON*
+  merges an export back in — file is read in the webview, parsed with a
+  20 MB / 10,000-entry cap, re-hashed and de-duplicated on-device, images
+  skipped (exports carry no PNG bytes), sensitive items re-flagged by the
+  local detector and skipped when *Never store detected secrets* is on,
+  pins/favorites/usage/tags/AI summaries restored — all in one transaction

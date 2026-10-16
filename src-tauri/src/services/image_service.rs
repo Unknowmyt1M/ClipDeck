@@ -81,6 +81,11 @@ impl ImageService {
         let _ = std::fs::remove_file(self.path_for(uuid, true));
     }
 
+    /// Whether this item's thumbnail exists on disk (capture repair check).
+    pub fn exists(&self, uuid: &str) -> bool {
+        self.thumb_path(uuid).exists()
+    }
+
     /// Delete files for many items (best effort).
     pub fn delete_many(&self, uuids: &[String]) {
         for uuid in uuids {
@@ -112,12 +117,17 @@ impl ImageService {
     }
 
     /// Remove every image file (privacy wipe).
-    pub fn delete_all(&self) {
+    /// Returns how many files were actually removed (reported to the user).
+    pub fn delete_all(&self) -> usize {
+        let mut removed = 0;
         if let Ok(entries) = std::fs::read_dir(&self.images_dir) {
             for entry in entries.flatten() {
-                let _ = std::fs::remove_file(entry.path());
+                if std::fs::remove_file(entry.path()).is_ok() {
+                    removed += 1;
+                }
             }
         }
+        removed
     }
 
     fn path_for(&self, uuid: &str, thumb: bool) -> PathBuf {

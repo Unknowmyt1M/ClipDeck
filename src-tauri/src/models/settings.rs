@@ -10,6 +10,9 @@ pub struct Settings {
     pub global_hotkey: String,
     pub history_limit: i64,
     pub close_to_tray: bool,
+    /// After picking a clip in the quick window, focus the previously
+    /// active app and send Ctrl+V (the paste ClipboardManager users expect).
+    pub auto_paste: bool,
 
     // Privacy
     pub pause_monitoring: bool,
@@ -30,8 +33,6 @@ pub struct Settings {
     pub ai_model_name: String,
     pub ai_free: bool,
     pub ai_auto_analyze: bool,
-    /// Whether AI may process content not flagged sensitive (user control).
-    pub ai_allow_general: bool,
 }
 
 impl Default for Settings {
@@ -42,6 +43,7 @@ impl Default for Settings {
             global_hotkey: "Ctrl+Shift+V".into(),
             history_limit: 500,
             close_to_tray: true,
+            auto_paste: true,
             pause_monitoring: false,
             sensitive_detection: true,
             skip_sensitive: false,
@@ -54,7 +56,6 @@ impl Default for Settings {
             ai_model_name: String::new(),
             ai_free: true,
             ai_auto_analyze: false,
-            ai_allow_general: false,
         }
     }
 }

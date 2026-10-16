@@ -30,6 +30,7 @@ pub fn run() {
             // clipboard
             commands::clipboard::get_items,
             commands::clipboard::restore_item,
+            commands::clipboard::restore_and_paste,
             commands::clipboard::set_item_pinned,
             commands::clipboard::set_item_favorite,
             commands::clipboard::delete_item,
@@ -53,6 +54,7 @@ pub fn run() {
             // stats / data management
             commands::system::get_stats,
             commands::system::export_history,
+            commands::system::import_history,
             commands::system::wipe_data,
             // windows
             commands::system::toggle_quick_window,
@@ -108,6 +110,19 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&settings),
         Arc::clone(&ai),
     );
+
+    // Start-up sweep: delete image files whose rows no longer exist (a
+    // crash mid-capture, an old bug, or manual tampering). Runs before the
+    // monitor's first poll (400 ms away), so no capture races it.
+    match db.image_uuids() {
+        Ok(keepers) => {
+            let removed = images.cleanup_orphans(&keepers);
+            if removed > 0 {
+                logger::log(&format!("[images] swept {removed} orphaned file(s)"));
+            }
+        }
+        Err(e) => logger::error("images", &e),
+    }
 
     let s = settings.get();
 

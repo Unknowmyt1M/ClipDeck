@@ -122,11 +122,15 @@ fn poll_once(
     // leave a stale image format alongside new text.
     match clipboard.get_text() {
         Ok(text) => {
-            let text = text.trim().to_string();
+            let text = text.trim();
             if text.is_empty() {
                 return Ok(());
             }
-            let hash = hash_bytes(text.as_bytes());
+            // Truncate BEFORE hashing: the stored hash must match the stored
+            // content, otherwise a restore re-hashes the short text and the
+            // same copy re-enters history as a phantom duplicate.
+            let truncated = truncate_text(text);
+            let hash = hash_bytes(truncated.as_bytes());
             if last_hash.as_deref() == Some(hash.as_str()) {
                 return Ok(());
             }
@@ -138,21 +142,13 @@ fn poll_once(
                 return Ok(());
             }
 
-            let sensitive = s.sensitive_detection && sensitive_detector::detect(&text).is_some();
+            let sensitive =
+                s.sensitive_detection && sensitive_detector::detect(truncated).is_some();
             if sensitive && s.skip_sensitive {
                 // Detected as secret AND user asked not to store secrets.
                 return Ok(());
             }
 
-            let truncated = if text.len() > MAX_TEXT_BYTES {
-                let mut end = MAX_TEXT_BYTES;
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
-                &text[..end]
-            } else {
-                &text
-            };
             let item_type = detect_type(truncated);
             let preview = make_preview(truncated);
             let (item, duplicate) = db.save_item(
@@ -207,9 +203,25 @@ fn poll_once(
                 },
             )?;
             if !duplicate {
-                let _ =
-                    images.save_rgba(&item.uuid, img.width as u32, img.height as u32, &img.bytes);
+                if let Err(e) =
+                    images.save_rgba(&item.uuid, img.width as u32, img.height as u32, &img.bytes)
+                {
+                    // Don't keep a row without its files (a card with a
+                    // broken thumbnail forever). The insert is rolled back
+                    // by dropping the row; content stays uncaptured.
+                    crate::services::logger::error("images", &e);
+                    let _ = db.delete_item(item.id);
+                    return Ok(());
+                }
                 after_new_item(db, images, ai, &s, item.id, false, "image")?;
+            } else if !images.exists(&item.uuid) {
+                // Duplicate whose files vanished (external cleanup): repair
+                // them while the pixels are still in hand.
+                if let Err(e) =
+                    images.save_rgba(&item.uuid, img.width as u32, img.height as u32, &img.bytes)
+                {
+                    crate::services::logger::error("images", &e);
+                }
             }
             emit_changed(app);
         }
@@ -228,8 +240,14 @@ fn after_new_item(
     sensitive: bool,
     item_type: &str,
 ) -> Result<(), String> {
-    let keepers = db.prune(s.history_limit, s.retention_days)?;
-    images.cleanup_orphans(&keepers);
+    // A prune failure must not abort the capture (the item is already
+    // stored); log it and keep going.
+    match db.prune(s.history_limit, s.retention_days) {
+        Ok(keepers) => {
+            images.cleanup_orphans(&keepers);
+        }
+        Err(e) => crate::services::logger::error("prune", &e),
+    }
 
     if s.ai_enabled && s.ai_auto_analyze && !sensitive && item_type != "image" {
         ai.enqueue_analyze(id);
@@ -266,7 +284,20 @@ fn read_clipboard_hash() -> Option<String> {
     }
 }
 
-fn hash_bytes(bytes: &[u8]) -> String {
+/// Cap text at MAX_TEXT_BYTES without splitting a UTF-8 char boundary.
+fn truncate_text(text: &str) -> &str {
+    if text.len() <= MAX_TEXT_BYTES {
+        return text;
+    }
+    let mut end = MAX_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// SHA-256 hex of arbitrary bytes (capture dedup + import re-hash).
+pub fn hash_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
@@ -328,5 +359,29 @@ mod tests {
         guard.start_write();
         guard.cancel_write();
         assert_eq!(flag.load(Ordering::SeqCst), GUARD_IDLE);
+    }
+
+    /// The stored hash must cover the *stored* (truncated) content, so a
+    /// restore → re-copy cycle doesn't create a duplicate entry.
+    #[test]
+    fn truncate_then_hash_matches_stored_content() {
+        let big = "a".repeat(MAX_TEXT_BYTES + 500);
+        let truncated = truncate_text(&big);
+        assert_eq!(truncated.len(), MAX_TEXT_BYTES);
+        assert_eq!(
+            hash_bytes(truncated.as_bytes()),
+            hash_bytes(&big.as_bytes()[..MAX_TEXT_BYTES]),
+            "hash must be computed over the truncated slice"
+        );
+
+        // Multibyte boundary safety: never panics, never splits a char.
+        let utf8 = "é".repeat(MAX_TEXT_BYTES); // 2 bytes each
+        let cut = truncate_text(&utf8);
+        assert!(cut.len() <= MAX_TEXT_BYTES);
+        assert!(cut.is_char_boundary(cut.len()));
+
+        // Short text passes through untouched.
+        let short = "hello";
+        assert_eq!(truncate_text(short), short);
     }
 }

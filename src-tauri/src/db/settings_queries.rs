@@ -9,6 +9,7 @@ const SETTING_KEYS: [&str; 21] = [
     "global_hotkey",
     "history_limit",
     "close_to_tray",
+    "auto_paste",
     "pause_monitoring",
     "sensitive_detection",
     "skip_sensitive",
@@ -21,7 +22,6 @@ const SETTING_KEYS: [&str; 21] = [
     "ai_model_name",
     "ai_free",
     "ai_auto_analyze",
-    "ai_allow_general",
     // Legacy/extra keys tolerated on read:
     "auto_tagging",
     "ai_send_sensitive",
@@ -48,6 +48,7 @@ pub fn get_settings(conn: &Connection) -> Result<Settings, String> {
             "global_hotkey" => settings.global_hotkey = value,
             "history_limit" => settings.history_limit = value.parse().unwrap_or(500),
             "close_to_tray" => settings.close_to_tray = value == "true",
+            "auto_paste" => settings.auto_paste = value == "true",
             "pause_monitoring" => settings.pause_monitoring = value == "true",
             "sensitive_detection" => settings.sensitive_detection = value == "true",
             "skip_sensitive" => settings.skip_sensitive = value == "true",
@@ -60,7 +61,6 @@ pub fn get_settings(conn: &Connection) -> Result<Settings, String> {
             "ai_model_name" => settings.ai_model_name = value,
             "ai_free" => settings.ai_free = value == "true",
             "ai_auto_analyze" => settings.ai_auto_analyze = value == "true",
-            "ai_allow_general" => settings.ai_allow_general = value == "true",
             _ => {}
         }
     }
@@ -83,6 +83,9 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), Stri
 }
 
 /// Batch upsert for saving a full Settings struct.
+///
+/// Runs inside one transaction so a mid-loop failure can't persist a
+/// half-updated settings set.
 pub fn save_settings(conn: &Connection, s: &Settings) -> Result<(), String> {
     let pairs: [(&str, String); 18] = [
         ("theme", s.theme.clone()),
@@ -90,6 +93,7 @@ pub fn save_settings(conn: &Connection, s: &Settings) -> Result<(), String> {
         ("global_hotkey", s.global_hotkey.clone()),
         ("history_limit", s.history_limit.to_string()),
         ("close_to_tray", s.close_to_tray.to_string()),
+        ("auto_paste", s.auto_paste.to_string()),
         ("pause_monitoring", s.pause_monitoring.to_string()),
         ("sensitive_detection", s.sensitive_detection.to_string()),
         ("skip_sensitive", s.skip_sensitive.to_string()),
@@ -102,25 +106,42 @@ pub fn save_settings(conn: &Connection, s: &Settings) -> Result<(), String> {
         ("ai_model_name", s.ai_model_name.clone()),
         ("ai_free", s.ai_free.to_string()),
         ("ai_auto_analyze", s.ai_auto_analyze.to_string()),
-        ("ai_allow_general", s.ai_allow_general.to_string()),
     ];
-    for (k, v) in &pairs {
-        set_setting(conn, k, v)?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|e| format!("save_settings begin: {e}"))?;
+    let result = (|| {
+        for (k, v) in &pairs {
+            set_setting(conn, k, v)?;
+        }
+        Ok::<(), String>(())
+    })();
+    match result {
+        Ok(()) => conn
+            .execute("COMMIT", [])
+            .map(|_| ())
+            .map_err(|e| format!("save_settings commit: {e}")),
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Err(e)
+        }
     }
-    Ok(())
 }
 
 // ---------- FTS search ----------
 
-/// Whether the FTS5 index exists (created in migration v2 when supported).
+/// Whether the FTS5 index exists **and** is fully wired (table + all three
+/// sync triggers, created in migration v2 when supported). A half-created
+/// index would silently stop updating, so it counts as unavailable.
 pub fn fts_available(conn: &Connection) -> bool {
     conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='clipboard_fts'",
+        "SELECT COUNT(*) FROM sqlite_master WHERE \
+         (type='table' AND name='clipboard_fts') OR \
+         (type='trigger' AND name IN ('clipboard_items_ai','clipboard_items_ad','clipboard_items_au'))",
         [],
         |r| r.get::<_, i64>(0),
     )
     .unwrap_or(0)
-        > 0
+        == 4
 }
 
 /// Escape a user query into a safe FTS5 MATCH expression (quoted terms, AND).

@@ -1,9 +1,24 @@
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::clipboard::AppState;
+use crate::models::clipboard::ClipboardItem;
 use crate::models::stats::Stats;
 use crate::services::windows_service;
+
+/// Window that was foreground before the quick picker opened — the target
+/// for auto-paste after a pick. HWND as isize (Send-type across threads).
+static PASTE_TARGET: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
+
+/// Remember the paste target (call on every quick-window show).
+pub(crate) fn set_paste_target(hwnd: isize) {
+    *PASTE_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = Some(hwnd);
+}
+
+/// Last remembered paste target, if any.
+pub(crate) fn paste_target() -> Option<isize> {
+    *PASTE_TARGET.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Aggregated usage statistics (content-free apart from previews).
 #[tauri::command]
@@ -42,6 +57,63 @@ pub fn export_history(app: AppHandle, state: State<'_, AppState>) -> Result<Expo
 }
 
 #[derive(Serialize)]
+pub struct ImportResult {
+    pub imported: usize,
+    pub skipped_duplicates: usize,
+    pub skipped_sensitive: usize,
+    pub skipped_images: usize,
+    pub invalid: usize,
+}
+
+/// Hard cap so a malicious/broken file can't stall the UI thread parsing
+/// millions of entries.
+const MAX_IMPORT_ENTRIES: usize = 10_000;
+/// Guard against loading a huge file into memory via the webview.
+const MAX_IMPORT_BYTES: usize = 20 * 1024 * 1024;
+
+/// Merge a ClipDeck export (JSON from `export_history`) back into the local
+/// history. Runs entirely on-device; images are skipped (the export holds
+/// no PNG bytes), duplicates and sensitive items are counted separately.
+#[tauri::command]
+pub fn import_history(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    json: String,
+) -> Result<ImportResult, String> {
+    if json.len() > MAX_IMPORT_BYTES {
+        return Err("export file is too large (20 MB max)".into());
+    }
+    let entries: Vec<ClipboardItem> =
+        serde_json::from_str(&json).map_err(|_| "not a valid ClipDeck export file".to_string())?;
+    let entries: Vec<ClipboardItem> = entries.into_iter().take(MAX_IMPORT_ENTRIES).collect();
+
+    let s = state.settings.get();
+    let out = state
+        .db
+        .import_items(&entries, s.sensitive_detection, s.skip_sensitive)?;
+
+    if out.imported > 0 {
+        // Same housekeeping as a live capture (limits/retention), then let
+        // the UI refresh via the history-changed event.
+        if let Err(e) = state.db.prune(s.history_limit, s.retention_days) {
+            crate::services::logger::error("prune", &e);
+        }
+        let _ = app.emit(
+            crate::services::clipboard_service::CLIPBOARD_CHANGED_EVENT,
+            (),
+        );
+    }
+
+    Ok(ImportResult {
+        imported: out.imported,
+        skipped_duplicates: out.skipped_duplicates,
+        skipped_sensitive: out.skipped_sensitive,
+        skipped_images: out.skipped_images,
+        invalid: out.invalid,
+    })
+}
+
+#[derive(Serialize)]
 pub struct WipeResult {
     pub deleted_rows: usize,
     pub deleted_images: usize,
@@ -52,11 +124,14 @@ pub struct WipeResult {
 #[tauri::command]
 pub fn wipe_data(state: State<'_, AppState>) -> Result<WipeResult, String> {
     let (deleted_rows, image_uuids) = state.db.wipe()?;
-    let before = image_uuids.len();
-    state.images.delete_all();
+    // Delete the files the wipe actually knew about, then sweep the whole
+    // directory so strays from deleted rows go too — report what was
+    // really removed, not a fabricated number.
+    state.images.delete_many(&image_uuids);
+    let deleted_images = state.images.delete_all();
     Ok(WipeResult {
         deleted_rows,
-        deleted_images: before.max(deleted_rows),
+        deleted_images,
     })
 }
 
@@ -69,6 +144,12 @@ pub fn toggle_quick_window(app: AppHandle) -> Result<(), String> {
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
     } else {
+        // Capture the paste target BEFORE taking foreground: this is the
+        // window the user was working in and where the picked clip should
+        // land. (Skips ClipDeck's own windows — see `foreground_window`.)
+        if let Some(hwnd) = windows_service::foreground_window() {
+            set_paste_target(hwnd);
+        }
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
