@@ -72,10 +72,61 @@ impl Settings {
 }
 
 fn parse_json_list(s: &str) -> Vec<String> {
-    serde_json::from_str::<Vec<String>>(s)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|v| v.trim().to_lowercase())
+    let entries: Vec<String> = serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|_| {
+        // Tolerate a legacy plain value (comma/newline separated).
+        s.split([',', '\n']).map(str::to_string).collect()
+    });
+    entries
+        .iter()
+        .map(|v| {
+            // Older UI versions double-encoded entries through the textarea
+            // (e.g. `["[\"keepass.exe\"]"]`); strip leftover JSON delimiters
+            // so the value still matches executable names/titles.
+            v.trim()
+                .trim_matches(['[', ']', '"', '\''])
+                .trim()
+                .to_lowercase()
+        })
         .filter(|v| !v.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_json_array() {
+        let s = Settings {
+            excluded_apps: r#"["keepass.exe","1Password.exe"]"#.into(),
+            ..Settings::default()
+        };
+        assert_eq!(s.excluded_apps_list(), vec!["keepass.exe", "1password.exe"]);
+    }
+
+    #[test]
+    fn heals_double_encoded_entries() {
+        // Exactly what old SettingsPage.saveList produced from
+        // `["keepass.exe"]` and `["a.exe","b.exe"]` respectively.
+        let one = Settings {
+            excluded_apps: r#"["[\"keepass.exe\"]"]"#.into(),
+            ..Settings::default()
+        };
+        assert_eq!(one.excluded_apps_list(), vec!["keepass.exe"]);
+
+        let two = Settings {
+            excluded_titles: r#"["[\"a.exe\"", "\"b.exe\"]"]"#.into(),
+            ..Settings::default()
+        };
+        assert_eq!(two.excluded_titles_list(), vec!["a.exe", "b.exe"]);
+    }
+
+    #[test]
+    fn falls_back_to_plain_text_values() {
+        let s = Settings {
+            excluded_apps: "keepass.exe, 1password.exe".into(),
+            ..Settings::default()
+        };
+        assert_eq!(s.excluded_apps_list(), vec!["keepass.exe", "1password.exe"]);
+    }
 }

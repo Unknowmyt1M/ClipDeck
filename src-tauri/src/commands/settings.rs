@@ -27,10 +27,15 @@ pub fn update_settings(
     }
 
     // Rebind the global hotkey before persisting so an invalid combo is
-    // reported while the old one still works.
+    // reported while the old one still works (and the old registration is
+    // only dropped after the new one succeeded).
     let mut settings = settings;
     if settings.global_hotkey != previous.global_hotkey {
-        crate::services::hotkey_service::bind(&app, settings.global_hotkey.trim())?;
+        crate::services::hotkey_service::rebind(
+            &app,
+            settings.global_hotkey.trim(),
+            &previous.global_hotkey,
+        )?;
     }
 
     // Sensible bounds — a bad UI value shouldn't wipe history.

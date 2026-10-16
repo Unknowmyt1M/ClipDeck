@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AiAction, ClipboardItem } from "../../types";
 import * as tauri from "../../lib/tauri";
 import { cn } from "../../lib/utils";
@@ -52,6 +52,18 @@ export function AiActionModal({ item, onClose, onCopied }: AiActionModalProps) {
     onCopied?.();
     onClose();
   };
+
+  // Esc closes the modal. The main window's shortcut listener bails out
+  // while `aiTarget` is set (App.tsx), so this must be its own listener.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   return (
     <div

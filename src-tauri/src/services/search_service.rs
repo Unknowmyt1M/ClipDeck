@@ -44,19 +44,14 @@ impl SearchService {
 }
 
 /// Load items for the given rowids preserving FTS rank order.
+///
+/// Batches into one SELECT + one `attach_ai` pass (3 queries total)
+/// instead of 3 queries per id.
 fn hydrate_in_order(
     conn: &rusqlite::Connection,
     ids: &[i64],
 ) -> Result<Vec<ClipboardItem>, String> {
-    let mut items = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(item) = queries::get_item(conn, *id)?
-            && !item.is_archived
-        {
-            items.push(item);
-        }
-    }
-    Ok(items)
+    queries::get_items_by_ids(conn, ids)
 }
 
 #[cfg(test)]

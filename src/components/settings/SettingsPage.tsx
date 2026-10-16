@@ -20,6 +20,32 @@ const SECTIONS: { id: SectionId; label: string }[] = [
   { id: "stats", label: "Statistics" },
 ];
 
+/**
+ * Stored exclusions are JSON arrays (`["keepass.exe"]`), but the textarea
+ * must show plain lines — otherwise re-saving split the JSON syntax into
+ * entries and double-encoded the list on every edit. Also heals values
+ * corrupted by older builds.
+ */
+function exclusionsToLines(raw: string): string {
+  const clean = (v: string) =>
+    v.trim()
+      .replace(/^[[\]"]+/, "")
+      .replace(/[[\]"]+$/, "")
+      .trim();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((v): v is string => typeof v === "string")
+        .map(clean)
+        .join("\n");
+    }
+  } catch {
+    // Not JSON (legacy plain value) — fall through and show it as-is.
+  }
+  return clean(raw);
+}
+
 /** Full-page settings view: General · Privacy · AI · Statistics. */
 export function SettingsPage({ settings, onChange, onClose }: SettingsPageProps) {
   const [section, setSection] = useState<SectionId>("general");
@@ -190,8 +216,8 @@ function PrivacySection({
   patch: (p: Partial<Settings>) => Promise<void>;
   notify: (m: string) => void;
 }) {
-  const [apps, setApps] = useState(settings.excluded_apps);
-  const [titles, setTitles] = useState(settings.excluded_titles);
+  const [apps, setApps] = useState(() => exclusionsToLines(settings.excluded_apps));
+  const [titles, setTitles] = useState(() => exclusionsToLines(settings.excluded_titles));
   const [exporting, setExporting] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [confirmWipe, setConfirmWipe] = useState(false);

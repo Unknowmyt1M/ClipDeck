@@ -62,6 +62,12 @@ pub async fn ai_transform(
     if item.is_sensitive {
         return Err("This clip is marked sensitive — AI is blocked for it.".into());
     }
+    // Second gate: run the on-device detector at call time (same rule as
+    // the background queue) so clips captured while detection was off — or
+    // before newer patterns existed — can never reach the provider.
+    if crate::security::sensitive_detector::detect(&item.content).is_some() {
+        return Err("This clip looks like a secret — AI is blocked for it.".into());
+    }
 
     let system = transform_system(&action, target_lang.as_deref())?;
     state

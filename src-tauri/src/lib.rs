@@ -60,8 +60,15 @@ pub fn run() {
             commands::system::show_main_window,
         ])
         .on_window_event(|window, event| {
-            // Closing the quick window always just hides it. The main window
-            // hides to tray unless the user turned that off.
+            // The quick picker behaves like a native popup: clicking
+            // anywhere outside (focus loss) dismisses it. The close button
+            // just hides; the main window hides to tray unless disabled.
+            if window.label() == "quick"
+                && let WindowEvent::Focused(false) = event
+            {
+                let _ = window.hide();
+                return;
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "quick" {
                     let _ = window.hide();

@@ -56,15 +56,22 @@ pub fn restore_item(state: State<'_, AppState>, id: i64) -> Result<ClipboardItem
         .get_item(id)?
         .ok_or_else(|| format!("item {id} not found"))?;
 
-    // Arm the guard before writing so the monitor ignores our own write.
-    state.write_guard.arm();
-
-    if item.item_type == crate::models::clipboard::ClipboardItemType::Image {
+    // Two-phase guard: mark the write in flight so the monitor skips the
+    // cycle, then arm it so the next tick adopts our content instead of
+    // re-capturing it (a single flag could be consumed before the write
+    // landed, producing a phantom duplicate).
+    state.write_guard.start_write();
+    let write_result = if item.item_type == crate::models::clipboard::ClipboardItemType::Image {
         let path = state.images.full_path(&item.uuid);
-        clipboard_service::write_image(&path)?;
+        clipboard_service::write_image(&path)
     } else {
-        clipboard_service::write_text(&item.content)?;
+        clipboard_service::write_text(&item.content)
+    };
+    if let Err(e) = write_result {
+        state.write_guard.cancel_write();
+        return Err(e);
     }
+    state.write_guard.finish_write();
 
     // Reuse the touch path to bump use_count / last_used_at.
     state.db.touch_item(id)?;

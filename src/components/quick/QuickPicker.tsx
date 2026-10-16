@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ClipboardItem } from "../../types";
 import * as tauri from "../../lib/tauri";
 import { cn, truncate } from "../../lib/utils";
@@ -54,29 +55,60 @@ export function QuickPicker() {
     }
   }, []);
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        setIndex((i) => Math.min(i + 1, items.length - 1));
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        setIndex((i) => Math.max(i - 1, 0));
-        break;
-      case "Enter":
-        e.preventDefault();
-        if (selected) void pick(selected);
-        break;
-      case "Escape":
-        e.preventDefault();
-        void tauri.hideQuickWindow();
-        break;
-    }
-  };
+  // Window-level listener: when the webview regains OS focus the active
+  // element is `document.body`, so a handler on the container <div> would
+  // never see the key — Esc/↑↓ silently did nothing.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      switch (e.key) {
+        case "ArrowDown":
+          e.preventDefault();
+          setIndex((i) => Math.min(i + 1, items.length - 1));
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          setIndex((i) => Math.max(i - 1, 0));
+          break;
+        case "Enter":
+          e.preventDefault();
+          if (selected) void pick(selected);
+          break;
+        case "Escape":
+          e.preventDefault();
+          void tauri.hideQuickWindow();
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [items.length, selected, pick]);
+
+  // WebView2 does not restore DOM focus when the native window is shown
+  // again (the component mounts once while the window is hidden), so the
+  // input must be re-focused on every focus gain — with a fresh query.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused) return;
+        setQuery("");
+        setIndex(0);
+        requestAnimationFrame(() => inputRef.current?.focus());
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
-    <div className="flex h-full flex-col bg-background" onKeyDown={onKeyDown}>
+    <div className="flex h-full flex-col bg-background">
       <div className="border-b border-border p-2.5">
         <input
           ref={inputRef}

@@ -215,6 +215,37 @@ pub fn get_item(conn: &Connection, id: i64) -> Result<Option<ClipboardItem>, Str
     Ok(item)
 }
 
+/// Load many items in one SELECT (+ a single `attach_ai` pass) preserving
+/// the order of `ids` — the batched alternative to calling `get_item` in a
+/// loop, which ran 3 queries per row. Archived items are skipped, matching
+/// `list_items`.
+pub fn get_items_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<ClipboardItem>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT {ITEM_COLUMNS} FROM clipboard_items \
+         WHERE id IN ({placeholders}) AND is_archived = 0"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("get_items_by_ids prepare: {e}"))?;
+    let mut items = stmt
+        .query_map(rusqlite::params_from_iter(ids.iter()), row_to_item)
+        .map_err(|e| format!("get_items_by_ids query: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("get_items_by_ids rows: {e}"))?;
+    attach_ai(conn, &mut items)?;
+
+    // `IN (...)` gives no ordering guarantee; restore the caller's order
+    // (FTS rank) explicitly.
+    let order: std::collections::HashMap<i64, usize> =
+        ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    items.sort_by_key(|item| order.get(&item.id).copied().unwrap_or(usize::MAX));
+    Ok(items)
+}
+
 /// List items with optional filter and search query, newest first.
 ///
 /// `type_filter` accepts a content type (`text`/`url`/`image`) plus the
@@ -555,5 +586,53 @@ mod tests {
         insert_text(&conn, "nothing here");
         let hits = list_items(&conn, None, Some("100%"), 100).expect("list");
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn get_items_by_ids_preserves_order_and_skips_archived() {
+        let conn = test_conn();
+        let a = insert_text(&conn, "first");
+        let b = insert_text(&conn, "second");
+
+        let batch = get_items_by_ids(&conn, &[b.id, a.id]).expect("batch");
+        assert_eq!(
+            batch.iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![b.id, a.id],
+            "input order must be preserved"
+        );
+
+        conn.execute(
+            "UPDATE clipboard_items SET is_archived = 1 WHERE id = ?1",
+            params![a.id],
+        )
+        .expect("archive");
+        let batch = get_items_by_ids(&conn, &[a.id, b.id]).expect("batch");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].id, b.id);
+    }
+
+    #[test]
+    fn get_items_by_ids_attaches_ai_metadata() {
+        let conn = test_conn();
+        let item = insert_text(&conn, "analyzed text");
+        let analysis = crate::models::ai::AiAnalysis {
+            summary: Some("a summary".into()),
+            category: Some("Text".into()),
+            keywords: vec!["kw".into()],
+            tags: vec![],
+            confidence: Some(0.8),
+        };
+        crate::db::settings_queries::save_ai_metadata(
+            &conn,
+            item.id,
+            "openrouter",
+            "m1",
+            &analysis,
+        )
+        .expect("save ai");
+
+        let batch = get_items_by_ids(&conn, &[item.id]).expect("batch");
+        assert_eq!(batch[0].ai_summary.as_deref(), Some("a summary"));
+        assert_eq!(batch[0].ai_category.as_deref(), Some("Text"));
     }
 }

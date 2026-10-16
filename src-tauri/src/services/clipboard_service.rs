@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -22,13 +22,32 @@ const POLL_INTERVAL: Duration = Duration::from_millis(400);
 /// Cap text content so a single huge copy can't bloat the database.
 const MAX_TEXT_BYTES: usize = 1_000_000;
 
-/// Set by restore operations so the monitor doesn't re-capture content
-/// ClipDeck itself wrote to the clipboard.
-pub struct SelfWriteGuard(Arc<AtomicBool>);
+/// Monitor state for writes ClipDeck itself makes to the clipboard.
+///
+/// Two-phase on purpose: a single "did write" flag could be consumed by a
+/// poll tick that woke up *between* arming and the write landing — the
+/// monitor would then sync to the *old* clipboard hash and re-capture the
+/// restored item on the next tick (a phantom use-count bump).
+const GUARD_IDLE: u8 = 0;
+/// A restore is writing right now: the poller skips the cycle.
+const GUARD_WRITING: u8 = 1;
+/// Write finished: the next poll syncs `last_hash` instead of capturing.
+const GUARD_ARMED: u8 = 2;
+
+pub struct SelfWriteGuard(Arc<AtomicU8>);
 
 impl SelfWriteGuard {
-    pub fn arm(&self) {
-        self.0.store(true, Ordering::SeqCst);
+    /// Call right before writing to the system clipboard.
+    pub fn start_write(&self) {
+        self.0.store(GUARD_WRITING, Ordering::SeqCst);
+    }
+    /// Call after a successful write; the next poll adopts the new hash.
+    pub fn finish_write(&self) {
+        self.0.store(GUARD_ARMED, Ordering::SeqCst);
+    }
+    /// Call when the write failed: the clipboard is unchanged.
+    pub fn cancel_write(&self) {
+        self.0.store(GUARD_IDLE, Ordering::SeqCst);
     }
 }
 
@@ -43,7 +62,7 @@ pub fn start_monitor(
     settings: Arc<SettingsService>,
     ai: Arc<AiService>,
 ) -> SelfWriteGuard {
-    let flag = Arc::new(AtomicBool::new(false));
+    let flag = Arc::new(AtomicU8::new(GUARD_IDLE));
     let guard = SelfWriteGuard(flag.clone());
 
     std::thread::spawn(move || {
@@ -67,15 +86,26 @@ fn poll_once(
     images: &ImageService,
     settings: &SettingsService,
     ai: &AiService,
-    flag: &AtomicBool,
+    flag: &AtomicU8,
     last_hash: &mut Option<String>,
 ) -> Result<(), String> {
-    // Skip one cycle after ClipDeck itself wrote to the clipboard.
-    if flag.swap(false, Ordering::SeqCst) {
-        if let Some(hash) = read_clipboard_hash() {
-            *last_hash = Some(hash);
+    // Our own write is still in flight → do nothing this cycle (reading
+    // now would sync the pre-write hash and re-capture the restore next
+    // tick). Once it landed, adopt the new clipboard hash instead of
+    // treating it as an external copy.
+    match flag.load(Ordering::SeqCst) {
+        GUARD_WRITING => return Ok(()),
+        GUARD_ARMED
+            if flag
+                .compare_exchange(GUARD_ARMED, GUARD_IDLE, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok() =>
+        {
+            if let Some(hash) = read_clipboard_hash() {
+                *last_hash = Some(hash);
+            }
+            return Ok(());
         }
-        return Ok(());
+        _ => {}
     }
 
     // Monitoring paused → track the clipboard silently so resuming doesn't
@@ -269,4 +299,34 @@ pub fn write_image(path: &std::path::Path) -> Result<(), String> {
             bytes: rgba.into_raw().into(),
         })
         .map_err(|e| format!("failed to set clipboard image: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The guard must stay in WRITING while a restore is mid-flight (so
+    /// the poller can't consume it early) and only arm after completion.
+    #[test]
+    fn guard_write_lifecycle() {
+        let flag = Arc::new(AtomicU8::new(GUARD_IDLE));
+        let guard = SelfWriteGuard(Arc::clone(&flag));
+
+        guard.start_write();
+        assert_eq!(flag.load(Ordering::SeqCst), GUARD_WRITING);
+
+        guard.finish_write();
+        assert_eq!(flag.load(Ordering::SeqCst), GUARD_ARMED);
+
+        // The poller consumes ARMED → IDLE atomically.
+        let consumed =
+            flag.compare_exchange(GUARD_ARMED, GUARD_IDLE, Ordering::SeqCst, Ordering::SeqCst);
+        assert!(consumed.is_ok());
+        assert_eq!(flag.load(Ordering::SeqCst), GUARD_IDLE);
+
+        // A failed write returns the guard to IDLE instead of sticking.
+        guard.start_write();
+        guard.cancel_write();
+        assert_eq!(flag.load(Ordering::SeqCst), GUARD_IDLE);
+    }
 }

@@ -28,3 +28,18 @@ pub fn bind(app: &AppHandle, shortcut: &str) -> Result<(), String> {
         .on_shortcut(shortcut, on_shortcut)
         .map_err(|e| format!("could not register hotkey '{shortcut}': {e}"))
 }
+
+/// Swap the active hotkey: register `new` first, then unregister
+/// `previous`. The old combo is only dropped once the new one is live, so
+/// an invalid or taken combo never leaves the user without a shortcut —
+/// and the old registration can't linger and fire alongside the new one.
+pub fn rebind(app: &AppHandle, new: &str, previous: &str) -> Result<(), String> {
+    let new = new.trim();
+    bind(app, new)?;
+    let previous = previous.trim();
+    if !previous.is_empty() && previous != new {
+        // Best effort: the previous combo may not be registered.
+        let _ = app.global_shortcut().unregister(previous);
+    }
+    Ok(())
+}
